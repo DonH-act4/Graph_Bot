@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -24,6 +25,7 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture
 def mock_env():
-    """Fixture to ensure environment is clean for each test."""
-    with patch.dict(os.environ, {}, clear=True):
+    """Isolate app settings while keeping Windows home-directory lookup available."""
+    home_env = {"USERPROFILE": str(Path.home())} if os.name == "nt" else {}
+    with patch.dict(os.environ, home_env, clear=True):
         yield

@@ -1,0 +1,107 @@
+{
+  "schema_version": "1",
+  "nodes": [
+    {
+      "node_id": "paper_transformer",
+      "node_type": "paper",
+      "name": "Attention Is All You Need",
+      "document_sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697",
+      "evidence": [
+        {"source_sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697", "block_id": "blk_45274f6859117447acef107f"}
+      ]
+    },
+    {
+      "node_id": "paper_bert",
+      "node_type": "paper",
+      "name": "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding",
+      "document_sha256": "5692a5514787a8c6727b4ff3b726a3385798bc68e12138d1d4af83947e2acf6e",
+      "evidence": [
+        {"source_sha256": "5692a5514787a8c6727b4ff3b726a3385798bc68e12138d1d4af83947e2acf6e", "block_id": "blk_9bcbce4b7d36ff32419dd3aa"}
+      ]
+    },
+    {
+      "node_id": "method_transformer",
+      "node_type": "method",
+      "name": "Transformer architecture",
+      "document_sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697",
+      "evidence": [
+        {"source_sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697", "block_id": "blk_0f415bc88734a6ffc60dad02"}
+      ]
+    },
+    {
+      "node_id": "method_transformer_encoder",
+      "node_type": "method",
+      "name": "Transformer encoder",
+      "document_sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697",
+      "evidence": [
+        {"source_sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697", "block_id": "blk_277925b27e14020e926e691e"}
+      ]
+    },
+    {
+      "node_id": "dataset_wmt2014_en_de",
+      "node_type": "dataset",
+      "name": "WMT 2014 English-German",
+      "document_sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697",
+      "evidence": [
+        {"source_sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697", "block_id": "blk_5f127d8a7898da36b12fc72c"}
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "relation_id": "transformer_introduces_transformer",
+      "source_node_id": "paper_transformer",
+      "target_node_id": "method_transformer",
+      "relation_type": "introduces",
+      "status": "direct",
+      "evidence": [
+        {"source_sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697", "block_id": "blk_0f415bc88734a6ffc60dad02"}
+      ],
+      "rationale": "Transformer abstract says 'We propose a new simple network architecture, the Transformer' (PDF page 1)."
+    },
+    {
+      "relation_id": "transformer_evaluated_on_wmt",
+      "source_node_id": "paper_transformer",
+      "target_node_id": "dataset_wmt2014_en_de",
+      "relation_type": "evaluated_on",
+      "status": "direct",
+      "evidence": [
+        {"source_sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697", "block_id": "blk_adb98f3687870a0f99fbb136"}
+      ],
+      "rationale": "Transformer paper reports its model result on the WMT 2014 English-German translation task (PDF page 8); the dataset is named on PDF page 7."
+    },
+    {
+      "relation_id": "bert_uses_transformer_encoder",
+      "source_node_id": "paper_bert",
+      "target_node_id": "method_transformer_encoder",
+      "relation_type": "uses",
+      "status": "direct",
+      "evidence": [
+        {"source_sha256": "5692a5514787a8c6727b4ff3b726a3385798bc68e12138d1d4af83947e2acf6e", "block_id": "blk_f010b0dbda49f6d7e7dfe22c"},
+        {"source_sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697", "block_id": "blk_277925b27e14020e926e691e"}
+      ],
+      "rationale": "BERT page 3 explicitly describes a Transformer encoder based on Vaswani et al. (2017); Transformer page 3 describes its encoder. This does not claim BERT uses the complete encoder-decoder architecture."
+    },
+    {
+      "relation_id": "bert_builds_on_transformer",
+      "source_node_id": "paper_bert",
+      "target_node_id": "paper_transformer",
+      "relation_type": "builds_on",
+      "status": "direct",
+      "evidence": [
+        {"source_sha256": "5692a5514787a8c6727b4ff3b726a3385798bc68e12138d1d4af83947e2acf6e", "block_id": "blk_f010b0dbda49f6d7e7dfe22c"},
+        {"source_sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697", "block_id": "blk_45274f6859117447acef107f"}
+      ],
+      "rationale": "BERT page 3 says its encoder is based on Vaswani et al. (2017), identified by the Transformer paper title. The claim is architectural dependency, not comparable benchmark superiority."
+    },
+    {
+      "relation_id": "bert_evaluated_on_wmt_unconfirmed",
+      "source_node_id": "paper_bert",
+      "target_node_id": "dataset_wmt2014_en_de",
+      "relation_type": "evaluated_on",
+      "status": "unconfirmed",
+      "evidence": [],
+      "rationale": "The two-paper evidence set does not support BERT being evaluated on WMT 2014 English-German. Keep this as a negative review case, never as a verified graph fact."
+    }
+  ]
+}

@@ -177,6 +177,7 @@ cython_debug/
 # Data
 *.docx
 *.pdf
+data/parsed/
 
 # Chroma db
 *.db

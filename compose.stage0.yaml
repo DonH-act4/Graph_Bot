@@ -1,0 +1,45 @@
+# Local-only smoke test of the existing Agent Service Toolkit scaffold.
+# This does not yet serve EvidenceGraph PDF upload or graph browsing.
+name: evidencegraph-stage0
+
+services:
+  agent_service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.service
+    env_file:
+      - .env
+    environment:
+      # Containers must listen on all container interfaces; the published port
+      # below remains bound to the Windows loopback interface only.
+      HOST: 0.0.0.0
+      SQLITE_DB_PATH: /app/data/stage0-smoke.db
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - stage0_sqlite:/app/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 12
+
+  streamlit_app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.app
+    environment:
+      AGENT_URL: http://agent_service:8080
+    ports:
+      - "127.0.0.1:8501:8501"
+    depends_on:
+      agent_service:
+        condition: service_healthy
+
+volumes:
+  stage0_sqlite:

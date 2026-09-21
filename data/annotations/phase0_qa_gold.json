@@ -1,0 +1,74 @@
+{
+  "schema_version": "1",
+  "cases": [
+    {
+      "case_id": "bert_encoder",
+      "question": "BERT 的模型架构使用了 Transformer 的哪个部分？",
+      "selected_documents": ["5692a5514787a8c6727b4ff3b726a3385798bc68e12138d1d4af83947e2acf6e"],
+      "answerability": "answerable",
+      "reference_answer": "BERT 使用多层双向 Transformer encoder（编码器）。",
+      "supporting_evidence": [
+        {"source_sha256": "5692a5514787a8c6727b4ff3b726a3385798bc68e12138d1d4af83947e2acf6e", "block_id": "blk_f010b0dbda49f6d7e7dfe22c"}
+      ],
+      "rationale": "BERT PDF 第 3 页的 Model Architecture 段直接写明 multi-layer bidirectional Transformer encoder；不能扩写成使用完整的 encoder-decoder。"
+    },
+    {
+      "case_id": "transformer_bleu_ende",
+      "question": "Transformer big 模型在 WMT 2014 英德翻译任务上取得多少 BLEU？",
+      "selected_documents": ["bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697"],
+      "answerability": "answerable",
+      "reference_answer": "28.4 BLEU。",
+      "supporting_evidence": [
+        {"source_sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697", "block_id": "blk_adb98f3687870a0f99fbb136"}
+      ],
+      "rationale": "Transformer PDF 第 8 页明确将 big model、WMT 2014 English-to-German 和 28.4 BLEU 关联在同一段。"
+    },
+    {
+      "case_id": "bert_mlm",
+      "question": "BERT 使用什么预训练目标来缓解单向语言模型的限制？",
+      "selected_documents": ["5692a5514787a8c6727b4ff3b726a3385798bc68e12138d1d4af83947e2acf6e"],
+      "answerability": "answerable",
+      "reference_answer": "Masked language model（MLM，掩码语言模型）预训练目标。",
+      "supporting_evidence": [
+        {"source_sha256": "5692a5514787a8c6727b4ff3b726a3385798bc68e12138d1d4af83947e2acf6e", "block_id": "blk_658ec327ec91b47f2d5e93ef"}
+      ],
+      "rationale": "BERT PDF 第 1 页明确说通过 MLM pre-training objective 缓解 unidirectionality constraint。"
+    },
+    {
+      "case_id": "bert_transformer_connection",
+      "question": "这两篇论文之间有什么明确的架构联系？",
+      "selected_documents": [
+        "5692a5514787a8c6727b4ff3b726a3385798bc68e12138d1d4af83947e2acf6e",
+        "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697"
+      ],
+      "answerability": "answerable",
+      "reference_answer": "BERT 的架构基于 Vaswani 等人提出的 Transformer encoder；BERT 使用的是编码器部分，不能据此说两篇论文使用完全相同的完整架构。",
+      "supporting_evidence": [
+        {"source_sha256": "5692a5514787a8c6727b4ff3b726a3385798bc68e12138d1d4af83947e2acf6e", "block_id": "blk_f010b0dbda49f6d7e7dfe22c"},
+        {"source_sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697", "block_id": "blk_277925b27e14020e926e691e"}
+      ],
+      "rationale": "BERT PDF 第 3 页明确引用 Vaswani et al. (2017) 的 Transformer encoder；Transformer PDF 第 3 页描述其 encoder。"
+    },
+    {
+      "case_id": "bert_wmt_bleu_insufficient",
+      "question": "只根据 BERT 论文，BERT 在 WMT 2014 英德翻译任务上的 BLEU 分数是多少？",
+      "selected_documents": ["5692a5514787a8c6727b4ff3b726a3385798bc68e12138d1d4af83947e2acf6e"],
+      "answerability": "insufficient",
+      "reference_answer": null,
+      "supporting_evidence": [],
+      "rationale": "所选 BERT PDF 的当前解析证据中没有支持该任务 BLEU 分数的段落。预期回答是证据不足，不是断言 BERT 在所有场景中绝对没有做过该实验。"
+    },
+    {
+      "case_id": "bert_vs_transformer_wmt_insufficient",
+      "question": "根据这两篇论文，能否确认 BERT 在 WMT 2014 英德翻译任务上超过 Transformer big 的 28.4 BLEU？",
+      "selected_documents": [
+        "5692a5514787a8c6727b4ff3b726a3385798bc68e12138d1d4af83947e2acf6e",
+        "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697"
+      ],
+      "answerability": "insufficient",
+      "reference_answer": null,
+      "supporting_evidence": [],
+      "rationale": "Transformer PDF 给出该任务的 28.4 BLEU，但所选 BERT PDF 没有可比较的同任务结果；共享 Transformer 架构并不等于性能可直接比较。"
+    }
+  ]
+}
