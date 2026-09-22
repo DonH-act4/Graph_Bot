@@ -112,6 +112,10 @@ If your agents or chosen LLM require file-based credential files or certificates
 
 ### Docker Setup
 
+For the EvidenceGraph phase 0 local baseline without an API key, use
+[`docs/STAGE0_RUNBOOK.md`](docs/STAGE0_RUNBOOK.md). The generic setup below belongs to the
+underlying Agent Service Toolkit and does not provide PDF upload or graph browsing.
+
 This project includes a Docker setup for easy development and deployment. The `compose.yaml` file defines three services: `postgres`, `agent_service` and `streamlit_app`. The `Dockerfile` for each service is in their respective directories.
 
 For local development, we recommend using [docker compose watch](https://docs.docker.com/compose/file-watch/). This feature allows for a smoother development experience by automatically updating your containers when changes are detected in your source code.

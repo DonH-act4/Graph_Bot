@@ -13,6 +13,8 @@ Chinese questions to exercise the intended Chinese-question/English-paper workfl
 | Transformer big's WMT 2014 English-German BLEU? | 28.4 BLEU | Transformer PDF p. 8 |
 | BERT's pre-training objective for bidirectional context? | Masked language model (MLM) | BERT PDF pp. 1–2 |
 | How are the two architectures related? | BERT is based on the Transformer encoder, not necessarily the complete encoder-decoder | BERT PDF p. 3 and Transformer PDF p. 3 |
+| What did RoBERTa change in BERT pretraining? | Longer training, larger batches and more data, no next-sentence prediction, longer sequences, dynamic masking | RoBERTa PDF p. 1 |
+| RoBERTa's WMT 2014 English-German BLEU, using only RoBERTa? | Insufficient evidence | No supporting answer citation in the selected PDF |
 | BERT's WMT 2014 English-German BLEU, using only the BERT paper? | Insufficient evidence | No supporting answer citation in the selected PDF |
 | Did BERT beat Transformer big's 28.4 BLEU on the same task? | Insufficient evidence | Transformer has a score; selected BERT evidence has no comparable same-task score |
 
@@ -28,14 +30,15 @@ An `insufficient` case must have neither. Duplicate case IDs, missing PDF versio
 IDs, and citations outside the selected PDFs are rejected. A citation is
 `(source_sha256, block_id)`; the parsed block supplies its page and bounding box.
 
-From the Windows repository root in PowerShell, after reproducing the two parsed JSON files as
+From the Windows repository root in PowerShell, after reproducing the three parsed JSON files as
 described in `data/samples/README.md`:
 
 ```powershell
 $env:PYTHONPATH = "src"
 uv run --no-sync python scripts\validate_qa_annotations.py `
   data\parsed\attention-is-all-you-need.json `
-  data\parsed\bert.json
+  data\parsed\bert.json `
+  data\parsed\roberta.json
 uv run --no-sync pytest -q tests\evidencegraph\test_qa_contract.py
 ```
 
@@ -52,5 +55,5 @@ stale or fabricated citation. It explicitly uses UTF-8 for Windows command-line 
   correctness, citation validity, and citation support instead of using string equality alone.
 - There is no Gemini call, retrieval, answer generation, API, or UI in this slice. A future assistant
   must be restricted to `selected_documents` in code, not only instructed by a prompt.
-- Six questions over two PDFs are an initial regression set, not evidence of general accuracy.
-  Add the roadmap's third paper and harder counterexamples before declaring phase 0 accepted.
+- Eight questions over three PDFs are an initial regression set, not evidence of general accuracy.
+  Add harder counterexamples and test real failure paths before declaring phase 0 accepted.

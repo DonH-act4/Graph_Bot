@@ -13,7 +13,7 @@ The first two PDFs were selected because they are born-digital English AI papers
 text, tables, figures, and formulas. BERT builds on the Transformer encoder. RoBERTa was added as
 the third sample because its paper explicitly studies BERT pretraining, offering another concrete
 cross-paper relationship to evaluate later. RoBERTa has been parsed and source-location checked,
-but has not yet been added to the manual graph/QA gold sets.
+and now has a manually reviewed BERT relation and two QA cases in the gold sets.
 
 From PowerShell in the repository root:
 
@@ -45,7 +45,27 @@ uv run --no-sync python scripts\inspect_pdf_provenance.py `
 
 The command writes parser-neutral JSON to `data\parsed`, which is ignored by Git because it is a
 reproducible local artifact. Each text or table block contains a stable block ID, its Docling source
-reference, and one or more page/bounding-box/character-span locations.
+reference, and one or more page/bounding-box/character-span locations. Parsed JSON schema version
+`2` uses PDF hash, parser version, page, label, text, and same-page occurrence for block IDs. Reparse
+old schema version `1` outputs before validating the current gold annotations; their IDs included
+Docling's platform-sensitive internal item number.
+
+## Reproduce on macOS
+
+From the repository root, download the same three URLs above into `data/samples`, then compare each
+SHA-256 with this table using `shasum -a 256 data/samples/*.pdf`. With the locked environment present:
+
+```bash
+PYTHONPATH=src uv run --no-sync python scripts/inspect_pdf_provenance.py \
+  data/samples/attention-is-all-you-need.pdf \
+  data/samples/bert.pdf \
+  data/samples/roberta.pdf
+PYTHONPATH=src uv run --no-sync python scripts/validate_graph_annotations.py data/parsed/*.json
+PYTHONPATH=src uv run --no-sync python scripts/validate_qa_annotations.py data/parsed/*.json
+```
+
+The glob should include only the three intended phase 0 parsed PDFs. See `docs/PHASE0_LIMITS.md`
+for measured macOS resource use and the remaining product-limit checks.
 
 The first run can download Docling's layout model from Hugging Face. It does not call Gemini or any
 other generative-model API. OCR is deliberately disabled for this born-digital baseline, so scanned

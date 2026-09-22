@@ -66,6 +66,9 @@ dependencies = [
 # Policy and override procedure: .claude/skills/dependency-refresh/SKILL.md
 [tool.uv]
 exclude-newer = "14 days"
+# transformers 5.16.1 can fail while detecting torch 2.14 package metadata.
+# Keep the transitive torch dependency on the last compatible minor release.
+constraint-dependencies = ["torch<2.14"]
 
 [dependency-groups]
 dev = [

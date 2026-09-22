@@ -6,11 +6,12 @@ import hashlib
 from collections.abc import Iterable
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from docling.datamodel.base_models import ConversionStatus, InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling.exceptions import ConversionError
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -64,7 +65,7 @@ class ParsedDocument(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    schema_version: str = "1"
+    schema_version: Literal["2"] = "2"
     source_filename: str
     source_sha256: str
     parser_name: str = "docling"
@@ -95,7 +96,10 @@ def parse_pdf(pdf_path: str | Path, *, converter: PdfConverter | None = None) ->
     source_hash = _sha256(source)
     parser_version = version("docling")
     active_converter = converter or build_pdf_converter()
-    result = active_converter.convert(source)
+    try:
+        result = active_converter.convert(source)
+    except ConversionError as exc:
+        raise PdfParseError("PDF conversion failed; file may be damaged or encrypted") from exc
 
     if result.status is not ConversionStatus.SUCCESS:
         raise PdfParseError(f"Docling conversion did not succeed: {result.status}")
@@ -143,6 +147,7 @@ def _sha256(source: Path) -> str:
 def _iter_blocks(
     document: Any, *, source_hash: str, parser_version: str
 ) -> Iterable[ParsedBlock]:
+    occurrences: dict[tuple[tuple[int, ...], str, str], int] = {}
     for item, _level in document.iterate_items():
         label_value = getattr(item, "label", "unknown")
         label = str(getattr(label_value, "value", label_value))
@@ -153,7 +158,13 @@ def _iter_blocks(
             continue
 
         locations = tuple(_source_location(entry) for entry in provenance)
-        identity = f"{source_hash}\0{parser_version}\0{source_ref}\0{text}"
+        pages = tuple(sorted({location.page_number for location in locations}))
+        content_key = (pages, label, text)
+        occurrence = occurrences.get(content_key, 0)
+        occurrences[content_key] = occurrence + 1
+        identity = "\0".join(
+            (source_hash, parser_version, ",".join(map(str, pages)), label, text, str(occurrence))
+        )
         block_id = f"blk_{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
         yield ParsedBlock(
             block_id=block_id,
