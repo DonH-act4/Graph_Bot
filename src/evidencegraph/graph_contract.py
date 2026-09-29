@@ -1,4 +1,4 @@
-"""Minimal, evidence-linked graph contract for manually reviewed paper claims."""
+"""Minimal, evidence-linked graph contract for paper claims."""
 
 from __future__ import annotations
 
@@ -7,7 +7,10 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from evidencegraph.ingestion import ParsedDocument
+from evidencegraph.models import ParsedDocument
+
+MAX_GRAPH_NODES = 25
+MAX_GRAPH_RELATIONS = 40
 
 
 class NodeType(StrEnum):
@@ -63,7 +66,7 @@ class GraphRelation(BaseModel):
     target_node_id: str = Field(min_length=1)
     relation_type: RelationType
     status: RelationStatus
-    evidence: tuple[EvidenceRef, ...] = ()
+    evidence: tuple[EvidenceRef, ...]
     rationale: str = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -74,13 +77,13 @@ class GraphRelation(BaseModel):
 
 
 class GraphAnnotation(BaseModel):
-    """Small reviewable graph fixture, not an automatically extracted graph."""
+    """A reviewable graph whose evidence can be checked against parsed PDFs."""
 
     model_config = ConfigDict(frozen=True)
 
     schema_version: str = "1"
-    nodes: tuple[GraphNode, ...] = Field(min_length=1)
-    relations: tuple[GraphRelation, ...]
+    nodes: tuple[GraphNode, ...] = Field(min_length=1, max_length=MAX_GRAPH_NODES)
+    relations: tuple[GraphRelation, ...] = Field(max_length=MAX_GRAPH_RELATIONS)
 
     @model_validator(mode="after")
     def validate_graph_structure(self) -> GraphAnnotation:

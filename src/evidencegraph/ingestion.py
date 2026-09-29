@@ -6,72 +6,26 @@ import hashlib
 from collections.abc import Iterable
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 
 from docling.datamodel.base_models import ConversionStatus, InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.exceptions import ConversionError
-from pydantic import BaseModel, ConfigDict, Field
 
-
-class PdfParseError(RuntimeError):
-    """Raised when a PDF cannot produce usable, source-located text."""
+from evidencegraph.models import (
+    BoundingBox,
+    ParsedBlock,
+    ParsedDocument,
+    PdfParseError,
+    SourceLocation,
+)
 
 
 class PdfConverter(Protocol):
     """Small boundary that keeps Docling replaceable and tests lightweight."""
 
     def convert(self, source: Path) -> Any: ...
-
-
-class BoundingBox(BaseModel):
-    """A box in PDF page coordinates."""
-
-    model_config = ConfigDict(frozen=True)
-
-    left: float
-    top: float
-    right: float
-    bottom: float
-    coordinate_origin: str
-
-
-class SourceLocation(BaseModel):
-    """Where a parsed block came from in the source PDF."""
-
-    model_config = ConfigDict(frozen=True)
-
-    page_number: int = Field(ge=1)
-    bounding_box: BoundingBox
-    character_start: int = Field(ge=0)
-    character_end: int = Field(ge=0)
-
-
-class ParsedBlock(BaseModel):
-    """One source-located text block from a specific parser run."""
-
-    model_config = ConfigDict(frozen=True)
-
-    block_id: str
-    source_ref: str
-    label: str
-    text: str = Field(min_length=1)
-    locations: tuple[SourceLocation, ...] = Field(min_length=1)
-
-
-class ParsedDocument(BaseModel):
-    """Parser-neutral output used by later evidence extraction."""
-
-    model_config = ConfigDict(frozen=True)
-
-    schema_version: Literal["2"] = "2"
-    source_filename: str
-    source_sha256: str
-    parser_name: str = "docling"
-    parser_version: str
-    page_count: int = Field(ge=1)
-    blocks: tuple[ParsedBlock, ...] = Field(min_length=1)
 
 
 def build_pdf_converter() -> DocumentConverter:

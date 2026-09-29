@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from evidencegraph.graph_contract import EvidenceRef
-from evidencegraph.ingestion import ParsedDocument
+from evidencegraph.models import ParsedDocument
 
 DocumentHash = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 

@@ -112,6 +112,7 @@ def test_unconfirmed_can_have_no_evidence_but_is_not_verified() -> None:
         target_node_id="target",
         relation_type=RelationType.BUILDS_ON,
         status=RelationStatus.UNCONFIRMED,
+        evidence=(),
         rationale="The corpus does not establish this relation.",
     )
     assert relation.evidence == ()
@@ -125,6 +126,7 @@ def test_direct_relation_without_evidence_is_rejected() -> None:
             target_node_id="target",
             relation_type=RelationType.BUILDS_ON,
             status=RelationStatus.DIRECT,
+            evidence=(),
             rationale="No citation.",
         )
 
@@ -136,6 +138,23 @@ def test_relation_to_missing_node_is_rejected() -> None:
             nodes=valid.nodes,
             relations=(valid.relations[0].model_copy(update={"target_node_id": "missing"}),),
         )
+
+
+def test_rejects_graphs_over_product_size_limits() -> None:
+    valid = _annotation()
+    repeated_nodes = tuple(
+        valid.nodes[0].model_copy(update={"node_id": f"node-{index}"})
+        for index in range(26)
+    )
+    with pytest.raises(ValidationError, match="at most 25 items"):
+        GraphAnnotation(nodes=repeated_nodes, relations=())
+
+    repeated_relations = tuple(
+        valid.relations[0].model_copy(update={"relation_id": f"relation-{index}"})
+        for index in range(41)
+    )
+    with pytest.raises(ValidationError, match="at most 40 items"):
+        GraphAnnotation(nodes=valid.nodes, relations=repeated_relations)
 
 
 def test_unknown_evidence_block_is_rejected() -> None:

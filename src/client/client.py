@@ -1,9 +1,10 @@
 import json
 import os
 from collections.abc import AsyncGenerator, Generator
-from typing import Any
+from typing import Any, Literal
 
 import httpx
+from pydantic import BaseModel, Field
 
 from schema import (
     ChatHistory,
@@ -20,6 +21,135 @@ from schema import (
 
 class AgentClientError(Exception):
     pass
+
+
+class PaperStatus(BaseModel):
+    """Status returned by the internal EvidenceGraph PDF endpoint."""
+
+    document_id: str
+    state: Literal["processing", "ready", "failed"]
+    page_count: int | None = None
+    block_count: int | None = None
+    error: str | None = None
+
+
+class EvidenceBoundingBox(BaseModel):
+    left: float
+    top: float
+    right: float
+    bottom: float
+    coordinate_origin: str
+
+
+class EvidenceLocation(BaseModel):
+    page_number: int = Field(ge=1)
+    bounding_box: EvidenceBoundingBox
+    character_start: int = Field(ge=0)
+    character_end: int = Field(ge=0)
+
+
+class EvidenceBlock(BaseModel):
+    block_id: str
+    source_ref: str
+    label: str
+    text: str
+    locations: tuple[EvidenceLocation, ...]
+
+
+class EvidenceBlockPage(BaseModel):
+    document_id: str
+    total: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    limit: int = Field(ge=1, le=50)
+    items: tuple[EvidenceBlock, ...]
+
+
+class GraphStatus(BaseModel):
+    document_id: str
+    state: Literal["queued", "processing", "ready", "failed"]
+    node_count: int | None = None
+    relation_count: int | None = None
+    extractor_name: str | None = None
+    extractor_version: str | None = None
+    current_version: int | None = None
+    error: str | None = None
+
+
+class GraphEvidenceRef(BaseModel):
+    source_sha256: str
+    block_id: str
+
+
+class GraphNode(BaseModel):
+    node_id: str
+    node_type: Literal["paper", "method", "dataset", "result", "claim"]
+    name: str
+    document_sha256: str
+    evidence: tuple[GraphEvidenceRef, ...]
+
+
+class GraphRelation(BaseModel):
+    relation_id: str
+    source_node_id: str
+    target_node_id: str
+    relation_type: Literal["introduces", "uses", "evaluated_on", "reports", "builds_on"]
+    status: Literal["candidate", "unconfirmed"]
+    evidence: tuple[GraphEvidenceRef, ...]
+    rationale: str
+
+
+class CandidateGraph(BaseModel):
+    schema_version: str
+    nodes: tuple[GraphNode, ...]
+    relations: tuple[GraphRelation, ...]
+
+
+class GraphUsage(BaseModel):
+    input_tokens: int = Field(ge=0)
+    cached_input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    thinking_tokens: int = Field(ge=0)
+    tool_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    paid_standard_estimate_usd: float | None = Field(default=None, ge=0)
+    pricing_basis: str | None = None
+
+
+class GraphArtifact(BaseModel):
+    schema_version: str
+    graph_version: int = Field(default=1, ge=1)
+    document_sha256: str
+    extractor_name: str
+    extractor_version: str
+    usage: GraphUsage | None = None
+    graph: CandidateGraph
+
+
+class RelationReview(BaseModel):
+    relation_id: str
+    decision: Literal["accepted", "rejected"]
+    reviewed_at: str
+
+
+class GraphReviews(BaseModel):
+    schema_version: str
+    document_sha256: str
+    graph_version: int = Field(default=1, ge=1)
+    reviews: tuple[RelationReview, ...]
+
+
+class GraphVersionSummary(BaseModel):
+    version: int = Field(ge=1)
+    extractor_name: str
+    extractor_version: str
+    node_count: int = Field(ge=0)
+    relation_count: int = Field(ge=0)
+
+
+class GraphVersions(BaseModel):
+    document_id: str
+    current_version: int = Field(ge=1)
+    versions: tuple[GraphVersionSummary, ...]
 
 
 class AgentClient:
@@ -73,6 +203,208 @@ class AgentClient:
         self.info = ServiceMetadata.model_validate(response.json())
         if not self.agent or self.agent not in [a.key for a in self.info.agents]:
             self.agent = self.info.default_agent
+
+    def upload_paper(self, content: bytes) -> PaperStatus:
+        """Submit one approved PDF version as a raw application/pdf body."""
+        try:
+            response = httpx.post(
+                f"{self.base_url}/papers",
+                content=content,
+                headers={**self._headers, "Content-Type": "application/pdf"},
+                timeout=30.0,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise AgentClientError(self._paper_error(exc.response)) from exc
+        except httpx.RequestError as exc:
+            raise AgentClientError("Paper service is unavailable") from exc
+        return self._parse_paper_status(response)
+
+    def get_paper(self, document_id: str) -> PaperStatus:
+        """Read a persisted processing state; the UI refreshes only on user action."""
+        try:
+            response = httpx.get(
+                f"{self.base_url}/papers/{document_id}",
+                headers=self._headers,
+                timeout=10.0,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise AgentClientError(self._paper_error(exc.response)) from exc
+        except httpx.RequestError as exc:
+            raise AgentClientError("Paper service is unavailable") from exc
+        return self._parse_paper_status(response)
+
+    def get_paper_blocks(
+        self, document_id: str, *, offset: int = 0, limit: int = 10
+    ) -> EvidenceBlockPage:
+        """Read one bounded evidence page after PDF parsing succeeds."""
+        try:
+            response = httpx.get(
+                f"{self.base_url}/papers/{document_id}/blocks",
+                params={"offset": offset, "limit": limit},
+                headers=self._headers,
+                timeout=10.0,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise AgentClientError(self._paper_error(exc.response)) from exc
+        except httpx.RequestError as exc:
+            raise AgentClientError("Paper service is unavailable") from exc
+        try:
+            return EvidenceBlockPage.model_validate(response.json())
+        except ValueError as exc:
+            raise AgentClientError("Paper service returned invalid evidence blocks") from exc
+
+    def get_paper_block(self, document_id: str, block_id: str) -> EvidenceBlock:
+        """Read one exact evidence block selected from a graph item."""
+        try:
+            response = httpx.get(
+                f"{self.base_url}/papers/{document_id}/blocks/{block_id}",
+                headers=self._headers,
+                timeout=10.0,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise AgentClientError(self._paper_error(exc.response)) from exc
+        except httpx.RequestError as exc:
+            raise AgentClientError("Paper service is unavailable") from exc
+        try:
+            return EvidenceBlock.model_validate(response.json())
+        except ValueError as exc:
+            raise AgentClientError("Paper service returned an invalid evidence block") from exc
+
+    def request_paper_graph(self, document_id: str) -> GraphStatus:
+        """Queue candidate extraction after PDF parsing is ready."""
+        return self._paper_graph_status_request("POST", f"/papers/{document_id}/graph")
+
+    def rebuild_paper_graph(self, document_id: str) -> GraphStatus:
+        """Queue a new immutable version while preserving the current graph."""
+        return self._paper_graph_status_request(
+            "POST", f"/papers/{document_id}/graph/rebuild"
+        )
+
+    def get_paper_graph_status(self, document_id: str) -> GraphStatus:
+        """Read candidate extraction state without starting new work."""
+        return self._paper_graph_status_request(
+            "GET", f"/papers/{document_id}/graph/status"
+        )
+
+    def get_paper_graph(
+        self, document_id: str, *, version: int | None = None
+    ) -> GraphArtifact:
+        """Read a validated candidate graph after extraction succeeds."""
+        request_options: dict[str, Any] = {}
+        if version is not None:
+            request_options["params"] = {"version": version}
+        try:
+            response = httpx.get(
+                f"{self.base_url}/papers/{document_id}/graph",
+                headers=self._headers,
+                timeout=10.0,
+                **request_options,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise AgentClientError(self._paper_error(exc.response)) from exc
+        except httpx.RequestError as exc:
+            raise AgentClientError("Paper service is unavailable") from exc
+        try:
+            return GraphArtifact.model_validate(response.json())
+        except ValueError as exc:
+            raise AgentClientError("Paper service returned an invalid graph") from exc
+
+    def get_paper_graph_versions(self, document_id: str) -> GraphVersions:
+        """List immutable graph versions and identify the current one."""
+        try:
+            response = httpx.get(
+                f"{self.base_url}/papers/{document_id}/graph/versions",
+                headers=self._headers,
+                timeout=10.0,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise AgentClientError(self._paper_error(exc.response)) from exc
+        except httpx.RequestError as exc:
+            raise AgentClientError("Paper service is unavailable") from exc
+        try:
+            return GraphVersions.model_validate(response.json())
+        except ValueError as exc:
+            raise AgentClientError("Paper service returned invalid graph versions") from exc
+
+    def get_paper_graph_reviews(
+        self, document_id: str, *, version: int | None = None
+    ) -> GraphReviews:
+        """Read the human decisions stored separately from model output."""
+        path = f"/papers/{document_id}/graph/reviews"
+        if version is not None:
+            path = f"{path}?version={version}"
+        return self._paper_graph_reviews_request("GET", path)
+
+    def review_paper_graph_relation(
+        self, document_id: str, relation_id: str, decision: Literal["accepted", "rejected"]
+    ) -> GraphReviews:
+        """Accept or reject one candidate relation without rewriting the graph."""
+        return self._paper_graph_reviews_request(
+            "PUT",
+            f"/papers/{document_id}/graph/relations/{relation_id}/review",
+            json={"decision": decision},
+        )
+
+    def _paper_graph_reviews_request(
+        self, method: str, path: str, *, json: dict[str, str] | None = None
+    ) -> GraphReviews:
+        try:
+            response = httpx.request(
+                method,
+                f"{self.base_url}{path}",
+                headers=self._headers,
+                json=json,
+                timeout=10.0,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise AgentClientError(self._paper_error(exc.response)) from exc
+        except httpx.RequestError as exc:
+            raise AgentClientError("Paper service is unavailable") from exc
+        try:
+            return GraphReviews.model_validate(response.json())
+        except ValueError as exc:
+            raise AgentClientError("Paper service returned invalid graph reviews") from exc
+
+    def _paper_graph_status_request(self, method: str, path: str) -> GraphStatus:
+        try:
+            response = httpx.request(
+                method,
+                f"{self.base_url}{path}",
+                headers=self._headers,
+                timeout=10.0,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise AgentClientError(self._paper_error(exc.response)) from exc
+        except httpx.RequestError as exc:
+            raise AgentClientError("Paper service is unavailable") from exc
+        try:
+            return GraphStatus.model_validate(response.json())
+        except ValueError as exc:
+            raise AgentClientError("Paper service returned an invalid graph status") from exc
+
+    @staticmethod
+    def _parse_paper_status(response: httpx.Response) -> PaperStatus:
+        try:
+            return PaperStatus.model_validate(response.json())
+        except ValueError as exc:
+            raise AgentClientError("Paper service returned an invalid status response") from exc
+
+    @staticmethod
+    def _paper_error(response: httpx.Response) -> str:
+        try:
+            detail = response.json().get("detail")
+        except (ValueError, AttributeError):
+            detail = None
+        message = detail if isinstance(detail, str) else "Request failed"
+        return f"Paper request failed ({response.status_code}): {message}"
 
     def update_agent(self, agent: str, verify: bool = True) -> None:
         if verify:

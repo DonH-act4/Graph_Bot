@@ -1,5 +1,6 @@
 from enum import StrEnum
 from json import loads
+from pathlib import Path
 from typing import Annotated, Any
 
 from dotenv import find_dotenv
@@ -124,6 +125,8 @@ class Settings(BaseSettings):
         DatabaseType.SQLITE
     )  # Options: DatabaseType.SQLITE or DatabaseType.POSTGRES
     SQLITE_DB_PATH: str = "checkpoints.db"
+    EVIDENCEGRAPH_DATA_DIR: Path = Path("data/evidencegraph")
+    EVIDENCEGRAPH_GRAPH_MODEL: str | None = None
 
     # PostgreSQL Configuration
     POSTGRES_USER: str | None = None

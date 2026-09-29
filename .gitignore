@@ -178,6 +178,7 @@ cython_debug/
 *.docx
 *.pdf
 data/parsed/
+data/evidencegraph/
 
 # Chroma db
 *.db

@@ -59,6 +59,7 @@ dependencies = [
     "ddgs>=9.14.4",
     "ag-ui-langgraph~=0.0.42",
     "docling>=2.126.0",
+    "streamlit-cytoscape==0.2.1",
 ]
 
 # Supply-chain cooldown: resolution only considers releases >=14 days old. Needs the
@@ -91,6 +92,7 @@ client = [
     "pydantic ~=2.13.4",
     "python-dotenv ~=1.2.2",
     "streamlit~=1.59.1",
+    "streamlit-cytoscape==0.2.1",
 ]
 
 [tool.ruff]

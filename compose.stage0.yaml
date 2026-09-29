@@ -1,5 +1,5 @@
-# Local-only smoke test of the existing Agent Service Toolkit scaffold.
-# This does not yet serve EvidenceGraph PDF upload or graph browsing.
+# Local-only Agent Service Toolkit scaffold and phase 1 internal PDF API.
+# This does not yet serve EvidenceGraph graph browsing.
 name: evidencegraph-stage0
 
 services:
@@ -17,6 +17,7 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
+      # Also persists /app/data/evidencegraph across container recreation.
       - stage0_sqlite:/app/data
     healthcheck:
       test:
@@ -28,6 +29,21 @@ services:
       timeout: 5s
       start_period: 60s
       retries: 12
+
+  paper_worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.service
+    command: ["python", "-m", "evidencegraph.paper_worker"]
+    env_file:
+      - .env
+    environment:
+      EVIDENCEGRAPH_DATA_DIR: /app/data/evidencegraph
+      LOG_LEVEL: INFO
+    volumes:
+      - stage0_sqlite:/app/data
+      - stage0_models:/root/.cache/huggingface
+    restart: "on-failure:3"
 
   streamlit_app:
     build:
@@ -43,3 +59,4 @@ services:
 
 volumes:
   stage0_sqlite:
+  stage0_models:

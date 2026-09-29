@@ -1,3 +1,35 @@
-from client.client import AgentClient, AgentClientError
+from client.client import (
+    AgentClient,
+    AgentClientError,
+    EvidenceBlock,
+    EvidenceBlockPage,
+    EvidenceBoundingBox,
+    EvidenceLocation,
+    GraphArtifact,
+    GraphEvidenceRef,
+    GraphNode,
+    GraphRelation,
+    GraphReviews,
+    GraphStatus,
+    GraphUsage,
+    GraphVersions,
+    PaperStatus,
+)
 
-__all__ = ["AgentClient", "AgentClientError"]
+__all__ = [
+    "AgentClient",
+    "AgentClientError",
+    "EvidenceBlock",
+    "EvidenceBlockPage",
+    "EvidenceBoundingBox",
+    "EvidenceLocation",
+    "GraphArtifact",
+    "GraphEvidenceRef",
+    "GraphNode",
+    "GraphRelation",
+    "GraphReviews",
+    "GraphStatus",
+    "GraphUsage",
+    "GraphVersions",
+    "PaperStatus",
+]
