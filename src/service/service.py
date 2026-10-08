@@ -1,13 +1,15 @@
+import asyncio
 import inspect
 import json
 import logging
+import re
 import warnings
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -27,14 +29,20 @@ from langfuse.langchain import (
 from langgraph.types import Command, Interrupt
 from langsmith import Client as LangsmithClient
 from langsmith import uuid7
+from starlette.concurrency import run_in_threadpool
 
 from agents import DEFAULT_AGENT, AgentGraph, get_agent, get_all_agent_info, load_agent
 from core import settings
+from evidencegraph.access import PaperAccessStore
+from evidencegraph.conversations import ConversationStore, merge_thread_summaries
+from evidencegraph.papers import PaperStore
+from evidencegraph.retrieval import is_contextual_followup, retrieve_paper_blocks
 from memory import initialize_database, initialize_store
 from schema import (
     ChatHistory,
     ChatHistoryInput,
     ChatMessage,
+    EvidenceContextInput,
     Feedback,
     FeedbackResponse,
     ServiceMetadata,
@@ -44,6 +52,12 @@ from schema import (
     UserThreadsInput,
 )
 from service.agui import router as agui_router
+from service.auth import get_optional_account
+from service.auth import router as auth_router
+from service.conversations import get_conversation_store, record_chat_workspace
+from service.conversations import router as conversations_router
+from service.identity import assert_session_owner, get_chat_identity, strict_identity_enabled
+from service.papers import get_guest_identity, get_paper_access_store, get_paper_store
 from service.papers import router as papers_router
 from service.threads import list_user_threads
 from service.utils import (
@@ -56,6 +70,100 @@ from service.utils import (
 
 warnings.filterwarnings("ignore", category=LangChainBetaWarning)
 logger = logging.getLogger(__name__)
+_active_chat_tasks: dict[str, set[asyncio.Task[Any]]] = {}
+_deleting_chat_threads: set[str] = set()
+
+
+def _track_chat_task(thread_id: str | None) -> None:
+    if thread_id is None:
+        return
+    if thread_id in _deleting_chat_threads:
+        raise HTTPException(status_code=409, detail="Conversation deletion is in progress")
+    task = asyncio.current_task()
+    if task is not None:
+        _active_chat_tasks.setdefault(thread_id, set()).add(task)
+
+
+def _untrack_chat_task(thread_id: str | None) -> None:
+    if thread_id is None:
+        return
+    task = asyncio.current_task()
+    if task is not None:
+        tasks = _active_chat_tasks.get(thread_id)
+        if tasks is not None:
+            tasks.discard(task)
+            if not tasks:
+                _active_chat_tasks.pop(thread_id, None)
+
+
+async def _stop_chat_tasks(thread_id: str) -> None:
+    if thread_id in _deleting_chat_threads:
+        raise HTTPException(status_code=409, detail="Conversation deletion is already in progress")
+    _deleting_chat_threads.add(thread_id)
+    current = asyncio.current_task()
+    tasks = tuple(task for task in _active_chat_tasks.get(thread_id, ()) if task is not current)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        try:
+            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=409, detail="Chat generation has not stopped; retry deletion shortly"
+            ) from exc
+
+
+def _checkpoint_document_ids(checkpoint: Any) -> set[str]:
+    """Find explicit PDF references in saved chat turns, including legacy threads."""
+    if checkpoint is None:
+        return set()
+    document_ids: set[str] = set()
+    for message in messages_from_checkpoint(checkpoint.checkpoint):
+        extra = message.additional_kwargs
+        context = extra.get("evidence_context")
+        candidates = [extra.get("document_id")]
+        if isinstance(context, dict):
+            candidates.append(context.get("document_id"))
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            if not isinstance(candidate, str) or re.fullmatch(r"[0-9a-f]{64}", candidate) is None:
+                raise HTTPException(status_code=409, detail="Saved paper reference is invalid")
+            document_ids.add(candidate)
+    return document_ids
+
+
+def _require_chat_paper_access(
+    user_input: UserInput,
+    guest_id: str,
+    access: PaperAccessStore,
+) -> None:
+    document_id = user_input.document_id
+    if user_input.evidence_context is not None:
+        document_id = user_input.evidence_context.document_id
+    if document_id is not None and not access.can_read(guest_id, document_id):
+        raise HTTPException(status_code=404, detail="Paper not found")
+
+
+async def _require_chat_thread_owner(
+    user_input: UserInput,
+    agent_id: str,
+    conversations: ConversationStore,
+    chat_identity: str | None,
+) -> None:
+    assert_session_owner(user_input.user_id, chat_identity)
+    if not strict_identity_enabled() or user_input.thread_id is None:
+        return
+    workspace = await run_in_threadpool(conversations.get, user_input.thread_id)
+    if workspace is not None and workspace.user_id != chat_identity:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    checkpointer = getattr(get_agent(agent_id), "checkpointer", None)
+    if checkpointer:
+        checkpoint = await checkpointer.aget_tuple(
+            RunnableConfig(configurable={"thread_id": user_input.thread_id})
+        )
+        if checkpoint and checkpoint.metadata.get("user_id") != chat_identity:
+            raise HTTPException(status_code=404, detail="Conversation not found")
 
 
 def custom_generate_unique_id(route: APIRoute) -> str:
@@ -123,7 +231,9 @@ app = FastAPI(lifespan=lifespan, generate_unique_id_function=custom_generate_uni
 router = APIRouter(dependencies=[Depends(verify_bearer)])
 # AG-UI protocol endpoints inherit the same bearer auth - see service/agui.py
 router.include_router(agui_router)
+router.include_router(auth_router)
 router.include_router(papers_router)
+router.include_router(conversations_router)
 
 
 @router.get("/info")
@@ -138,8 +248,25 @@ async def info() -> ServiceMetadata:
     )
 
 
+@router.get("/session")
+def session(
+    guest_id: Annotated[str, Depends(get_guest_identity)],
+    account_id: Annotated[str | None, Depends(get_optional_account)],
+) -> dict[str, str | bool]:
+    """Tell the browser its server-issued identity without exposing the bearer cookie."""
+    return {
+        "user_id": (account_id or guest_id) if settings.EVIDENCEGRAPH_REQUIRE_LOGIN_FOR_CHAT else guest_id,
+        "identity_enforced": strict_identity_enabled(),
+        "chat_requires_login": settings.EVIDENCEGRAPH_REQUIRE_LOGIN_FOR_CHAT,
+        "authenticated": account_id is not None,
+    }
+
+
 async def _handle_input(
-    user_input: UserInput, agent: AgentGraph, agent_id: str
+    user_input: UserInput,
+    agent: AgentGraph,
+    agent_id: str,
+    evidence_context: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], UUID]:
     """
     Parse user input and handle any required interrupt resumption.
@@ -181,6 +308,24 @@ async def _handle_input(
     # Check for interrupts that need to be resumed
     state = await agent.aget_state(config=config)
 
+    if (
+        evidence_context is not None
+        and evidence_context.get("source_mode") == "automatic"
+        and is_contextual_followup(user_input.message)
+    ):
+        previous_messages = state.values.get("messages", [])
+        for previous_message in reversed(previous_messages):
+            if not isinstance(previous_message, HumanMessage):
+                continue
+            previous_context = previous_message.additional_kwargs.get("evidence_context")
+            if (
+                isinstance(previous_context, dict)
+                and previous_context.get("document_id") == evidence_context["document_id"]
+                and previous_context.get("source_mode", "selected") == "selected"
+            ):
+                evidence_context = previous_context
+            break
+
     interrupted_tasks = [
         task for task in state.tasks if hasattr(task, "interrupts") and task.interrupts
     ]
@@ -190,7 +335,21 @@ async def _handle_input(
         # assume user input is response to resume agent execution from interrupt
         input = Command(resume=user_input.message)
     else:
-        input = {"messages": [HumanMessage(content=user_input.message)]}
+        additional_kwargs: dict[str, Any] = (
+            {"evidence_context": evidence_context} if evidence_context is not None else {}
+        )
+        if evidence_context is not None:
+            additional_kwargs["document_id"] = evidence_context["document_id"]
+        elif user_input.document_id is not None:
+            additional_kwargs["document_id"] = user_input.document_id
+        input = {
+            "messages": [
+                HumanMessage(
+                    content=user_input.message,
+                    additional_kwargs=additional_kwargs,
+                )
+            ]
+        }
 
     kwargs = {
         "input": input,
@@ -200,9 +359,67 @@ async def _handle_input(
     return kwargs, run_id
 
 
+def _resolve_evidence_context(
+    selection: EvidenceContextInput | None,
+    store: PaperStore,
+    document_id: str | None = None,
+    query: str = "",
+) -> dict[str, Any] | None:
+    """Resolve selected IDs or retrieve bounded passages from the current paper."""
+    current_document_id = selection.document_id if selection is not None else document_id
+    if current_document_id is None:
+        return None
+    if selection is not None and document_id is not None and selection.document_id != document_id:
+        raise HTTPException(status_code=422, detail="Selected evidence belongs to another paper")
+    try:
+        record = store.get(current_document_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Paper not found")
+        if selection is None:
+            parsed = store.get_parsed_document(current_document_id)
+            resolved_blocks = retrieve_paper_blocks(parsed, query)
+            if not resolved_blocks:
+                raise HTTPException(status_code=422, detail="No paper passages fit the evidence budget")
+        else:
+            selected_blocks = []
+            for block_id in selection.block_ids:
+                block = store.get_block(current_document_id, block_id)
+                if block is None:
+                    raise HTTPException(status_code=404, detail="Evidence block not found")
+                selected_blocks.append(block)
+            resolved_blocks = tuple(selected_blocks)
+        blocks = [
+            {
+                "block_id": block.block_id,
+                "pages": sorted({location.page_number for location in block.locations}),
+                "text": block.text,
+            }
+            for block in resolved_blocks
+        ]
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Paper source is unavailable") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "document_id": current_document_id,
+        "source_mode": "selected" if selection is not None else "automatic",
+        "blocks": blocks,
+    }
+
+
 @router.post("/{agent_id}/invoke", operation_id="invoke_with_agent_id")
 @router.post("/invoke")
-async def invoke(user_input: UserInput, agent_id: str = DEFAULT_AGENT) -> ChatMessage:
+async def invoke(
+    user_input: UserInput,
+    store: Annotated[PaperStore, Depends(get_paper_store)],
+    conversations: Annotated[ConversationStore, Depends(get_conversation_store)],
+    guest_id: Annotated[str, Depends(get_guest_identity)],
+    chat_identity: Annotated[str | None, Depends(get_chat_identity)],
+    access: Annotated[PaperAccessStore, Depends(get_paper_access_store)],
+    agent_id: str = DEFAULT_AGENT,
+) -> ChatMessage:
     """
     Invoke an agent with user input to retrieve a final response.
 
@@ -216,10 +433,23 @@ async def invoke(user_input: UserInput, agent_id: str = DEFAULT_AGENT) -> ChatMe
     # in interrupt-agent, or a tool step in research-assistant), it's omitted. Arguably,
     # you'd want to include it. You could update the API to return a list of ChatMessages
     # in that case.
+    await _require_chat_thread_owner(user_input, agent_id, conversations, chat_identity)
+    _require_chat_paper_access(user_input, guest_id, access)
     agent: AgentGraph = get_agent(agent_id)
-    kwargs, run_id = await _handle_input(user_input, agent, agent_id)
+    evidence_context = await run_in_threadpool(
+        _resolve_evidence_context,
+        user_input.evidence_context,
+        store,
+        user_input.document_id,
+        user_input.message,
+    )
+    await record_chat_workspace(user_input, agent_id, conversations, store)
+    _track_chat_task(user_input.thread_id)
 
     try:
+        kwargs, run_id = await _handle_input(
+            user_input, agent, agent_id, evidence_context
+        )
         response_events: list[tuple[str, Any]] = await agent.ainvoke(**kwargs, stream_mode=["updates", "values"])  # type: ignore # fmt: skip
         response_type, response = response_events[-1]
         # A run that stops on an interrupt reports it on the final event of either stream
@@ -237,13 +467,19 @@ async def invoke(user_input: UserInput, agent_id: str = DEFAULT_AGENT) -> ChatMe
 
         output.run_id = str(run_id)
         return output
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"An exception occurred: {e}")
         raise HTTPException(status_code=500, detail="Unexpected error")
+    finally:
+        _untrack_chat_task(user_input.thread_id)
 
 
 async def message_generator(
-    user_input: StreamInput, agent_id: str = DEFAULT_AGENT
+    user_input: StreamInput,
+    agent_id: str = DEFAULT_AGENT,
+    evidence_context: dict[str, Any] | None = None,
 ) -> AsyncGenerator[str, None]:
     """
     Generate a stream of messages from the agent.
@@ -251,9 +487,12 @@ async def message_generator(
     This is the workhorse method for the /stream endpoint.
     """
     agent: AgentGraph = get_agent(agent_id)
-    kwargs, run_id = await _handle_input(user_input, agent, agent_id)
+    _track_chat_task(user_input.thread_id)
 
     try:
+        kwargs, run_id = await _handle_input(
+            user_input, agent, agent_id, evidence_context
+        )
         # Process streamed events from the graph and yield messages over the SSE stream.
         async for stream_event in agent.astream(  # type: ignore[no-matching-overload]
             **kwargs, stream_mode=["updates", "messages", "custom"], subgraphs=True
@@ -352,6 +591,7 @@ async def message_generator(
         logger.error(f"Error in message generator: {e}")
         yield f"data: {json.dumps({'type': 'error', 'content': 'Internal server error'})}\n\n"
     finally:
+        _untrack_chat_task(user_input.thread_id)
         yield "data: [DONE]\n\n"
 
 
@@ -383,7 +623,15 @@ def _sse_response_example() -> dict[int | str, Any]:
     operation_id="stream_with_agent_id",
 )
 @router.post("/stream", response_class=StreamingResponse, responses=_sse_response_example())
-async def stream(user_input: StreamInput, agent_id: str = DEFAULT_AGENT) -> StreamingResponse:
+async def stream(
+    user_input: StreamInput,
+    store: Annotated[PaperStore, Depends(get_paper_store)],
+    conversations: Annotated[ConversationStore, Depends(get_conversation_store)],
+    guest_id: Annotated[str, Depends(get_guest_identity)],
+    chat_identity: Annotated[str | None, Depends(get_chat_identity)],
+    access: Annotated[PaperAccessStore, Depends(get_paper_access_store)],
+    agent_id: str = DEFAULT_AGENT,
+) -> StreamingResponse:
     """
     Stream an agent's response to a user input, including intermediate messages and tokens.
 
@@ -394,8 +642,18 @@ async def stream(user_input: StreamInput, agent_id: str = DEFAULT_AGENT) -> Stre
 
     Set `stream_tokens=false` to return intermediate messages but not token-by-token.
     """
+    await _require_chat_thread_owner(user_input, agent_id, conversations, chat_identity)
+    _require_chat_paper_access(user_input, guest_id, access)
+    evidence_context = await run_in_threadpool(
+        _resolve_evidence_context,
+        user_input.evidence_context,
+        store,
+        user_input.document_id,
+        user_input.message,
+    )
+    await record_chat_workspace(user_input, agent_id, conversations, store)
     return StreamingResponse(
-        message_generator(user_input, agent_id),
+        message_generator(user_input, agent_id, evidence_context),
         media_type="text/event-stream",
     )
 
@@ -409,6 +667,8 @@ async def feedback(feedback: Feedback) -> FeedbackResponse:
     credentials can be stored and managed in the service rather than the client.
     See: https://api.smith.langchain.com/redoc#tag/feedback/operation/create_feedback_api_v1_feedback_post
     """
+    if strict_identity_enabled():
+        raise HTTPException(status_code=403, detail="Feedback is unavailable in strict session mode")
     client = LangsmithClient()
     kwargs = feedback.kwargs or {}
     client.create_feedback(
@@ -422,14 +682,35 @@ async def feedback(feedback: Feedback) -> FeedbackResponse:
 
 @router.post("/{agent_id}/history", operation_id="history_with_agent_id")
 @router.post("/history")
-async def history(input: ChatHistoryInput, agent_id: str = DEFAULT_AGENT) -> ChatHistory:
+async def history(
+    input: ChatHistoryInput,
+    conversations: Annotated[ConversationStore, Depends(get_conversation_store)],
+    chat_identity: Annotated[str | None, Depends(get_chat_identity)],
+    agent_id: str = DEFAULT_AGENT,
+) -> ChatHistory:
     """
     Get chat history for a thread and agent.
 
     If agent_id is not provided, the default agent will be used.
     """
+    sample = await run_in_threadpool(conversations.get_showcase)
+    is_public_sample = (
+        sample is not None
+        and input.thread_id == sample.thread_id
+        and input.user_id == sample.user_id
+    )
+    if not is_public_sample:
+        assert_session_owner(input.user_id, chat_identity)
     agent: AgentGraph = get_agent(agent_id)
     config = RunnableConfig(configurable={"thread_id": input.thread_id})
+    workspace = await run_in_threadpool(conversations.get, input.thread_id)
+    if await run_in_threadpool(conversations.is_deleted, input.thread_id):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if workspace is not None and (
+        workspace.agent_id != agent_id
+        or (input.user_id is not None and workspace.user_id != input.user_id)
+    ):
+        raise HTTPException(status_code=404, detail="Conversation not found")
     try:
         messages: list[BaseMessage] = []
         # Functional-API agents keep the conversation in `__previous__`, which aget_state
@@ -437,13 +718,35 @@ async def history(input: ChatHistoryInput, agent_id: str = DEFAULT_AGENT) -> Cha
         checkpointer = getattr(agent, "checkpointer", None)
         if checkpointer:
             tup = await checkpointer.aget_tuple(config)
+            if (
+                strict_identity_enabled()
+                and not is_public_sample
+                and workspace is None
+                and tup is None
+            ):
+                return ChatHistory(messages=[], conversation=None)
+            if tup and strict_identity_enabled() and not is_public_sample:
+                if tup.metadata.get("user_id") != chat_identity:
+                    raise HTTPException(status_code=404, detail="Conversation not found")
+            elif tup and input.user_id is not None:
+                metadata = tup.metadata
+                if metadata.get("user_id") not in (None, input.user_id):
+                    raise HTTPException(status_code=404, detail="Conversation not found")
             if tup and "__previous__" in (tup.checkpoint.get("channel_values") or {}):
                 messages = messages_from_checkpoint(tup.checkpoint)
+        elif (
+            strict_identity_enabled()
+            and not is_public_sample
+            and workspace is None
+        ):
+            return ChatHistory(messages=[], conversation=None)
         if not messages:
             state_snapshot = await agent.aget_state(config=config)
-            messages = state_snapshot.values["messages"]
+            messages = state_snapshot.values.get("messages", [])
         chat_messages: list[ChatMessage] = [langchain_to_chat_message(m) for m in messages]
-        return ChatHistory(messages=chat_messages)
+        return ChatHistory(messages=chat_messages, conversation=workspace)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"An exception occurred: {e}")
         raise HTTPException(status_code=500, detail="Unexpected error")
@@ -452,28 +755,131 @@ async def history(input: ChatHistoryInput, agent_id: str = DEFAULT_AGENT) -> Cha
 @router.get("/{agent_id}/threads", operation_id="threads_with_agent_id")
 @router.get("/threads")
 async def threads(
-    input: UserThreadsInput = Depends(), agent_id: str = DEFAULT_AGENT
+    conversations: Annotated[ConversationStore, Depends(get_conversation_store)],
+    chat_identity: Annotated[str | None, Depends(get_chat_identity)],
+    input: UserThreadsInput = Depends(),
+    agent_id: str = DEFAULT_AGENT,
 ) -> UserThreads:
     """
     List a user's conversation threads for an agent, most recently updated first.
 
-    `user_id` is asserted by the caller and not checked against the credentials on the
-    request, so any holder of the bearer token can list any user's threads - the same
-    trust model as /history. Put your own authorization in front of this before end
-    users can reach it.
+    In account mode, the caller's user_id must match the active login session.
+    Legacy local mode retains its original caller-supplied identity behavior.
     """
+    assert_session_owner(input.user_id, chat_identity)
     agent: AgentGraph = get_agent(agent_id)
     checkpointer = getattr(agent, "checkpointer", None)
-    if not checkpointer:
-        return UserThreads(threads=[])
-
     try:
-        summaries = await list_user_threads(checkpointer, input.user_id, agent_id, input.limit)
+        summaries = (
+            await list_user_threads(checkpointer, input.user_id, agent_id, input.limit)
+            if checkpointer
+            else []
+        )
+        workspaces = await run_in_threadpool(
+            conversations.list, input.user_id, agent_id, input.limit
+        )
+        summaries = merge_thread_summaries(summaries, workspaces, input.limit)
+        deleted = await run_in_threadpool(
+            conversations.deleted_thread_ids, [summary.thread_id for summary in summaries]
+        )
+        summaries = [summary for summary in summaries if summary.thread_id not in deleted]
     except Exception as e:
         logger.error(f"An exception occurred: {e}")
         raise HTTPException(status_code=500, detail="Unexpected error")
 
     return UserThreads(threads=summaries)
+
+
+@router.delete("/conversations/{thread_id}", status_code=204)
+async def delete_conversation(
+    thread_id: str,
+    user_id: Annotated[str, Query(min_length=1, max_length=200)],
+    conversations: Annotated[ConversationStore, Depends(get_conversation_store)],
+    papers: Annotated[PaperStore, Depends(get_paper_store)],
+    guest_id: Annotated[str, Depends(get_guest_identity)],
+    chat_identity: Annotated[str | None, Depends(get_chat_identity)],
+    access: Annotated[PaperAccessStore, Depends(get_paper_access_store)],
+) -> Response:
+    """Stop its work and delete its private chat and exclusively referenced paper."""
+    assert_session_owner(user_id, chat_identity)
+    if not thread_id or len(thread_id) > 200:
+        raise HTTPException(status_code=422, detail="Invalid thread ID")
+    if await run_in_threadpool(conversations.is_deleted, thread_id):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    showcase = await run_in_threadpool(conversations.get_showcase)
+    if showcase and showcase.thread_id == thread_id:
+        raise HTTPException(status_code=403, detail="Sample conversation is read-only")
+
+    workspace = await run_in_threadpool(conversations.get, thread_id)
+    checkpointer = getattr(get_agent(DEFAULT_AGENT), "checkpointer", None)
+    checkpoint = (
+        await checkpointer.aget_tuple(RunnableConfig(configurable={"thread_id": thread_id}))
+        if checkpointer
+        else None
+    )
+    if workspace is not None:
+        if workspace.user_id != user_id or workspace.agent_id != DEFAULT_AGENT:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        if checkpoint and (
+            checkpoint.metadata.get("user_id") not in (None, user_id)
+            or checkpoint.metadata.get("agent_id") not in (None, DEFAULT_AGENT)
+        ):
+            raise HTTPException(status_code=404, detail="Conversation not found")
+    elif (
+        not checkpoint
+        or checkpoint.metadata.get("user_id") != user_id
+        or checkpoint.metadata.get("agent_id") != DEFAULT_AGENT
+    ):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    try:
+        document_ids = _checkpoint_document_ids(checkpoint)
+        if workspace is not None and workspace.document_id is not None:
+            document_ids.add(workspace.document_id)
+        if len(document_ids) > 1:
+            raise HTTPException(
+                status_code=409,
+                detail="Conversation references multiple PDFs; cannot safely delete all of them",
+            )
+        document_id = next(iter(document_ids), None)
+        if document_id is not None:
+            if not access.owns(guest_id, document_id):
+                raise HTTPException(status_code=404, detail="Conversation not found")
+            if access.has_other_owner(guest_id, document_id):
+                raise HTTPException(
+                    status_code=409,
+                    detail="This PDF is also owned by another visitor; it cannot be deleted here",
+                )
+            if showcase and showcase.document_id == document_id:
+                raise HTTPException(status_code=409, detail="This PDF is used by the tutorial")
+            other_threads = await run_in_threadpool(
+                conversations.other_threads_using_document, document_id, thread_id
+            )
+            if other_threads:
+                raise HTTPException(
+                    status_code=409,
+                    detail="This PDF is attached to another conversation; unlink it there first",
+                )
+        await _stop_chat_tasks(thread_id)
+        if document_id is not None and (
+            await run_in_threadpool(papers.get, document_id) is not None
+            or await run_in_threadpool(papers.deletion_state, document_id) == "deleting"
+        ):
+            await run_in_threadpool(papers.request_deletion, document_id)
+            await run_in_threadpool(papers.finish_deletion, document_id)
+        if checkpointer:
+            await checkpointer.adelete_thread(thread_id)
+        await run_in_threadpool(conversations.delete, thread_id, user_id, DEFAULT_AGENT)
+        if document_id is not None:
+            await run_in_threadpool(access.revoke, guest_id, document_id)
+    except TimeoutError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=404, detail="Conversation not found") from exc
+    finally:
+        if not _active_chat_tasks.get(thread_id):
+            _deleting_chat_threads.discard(thread_id)
+    return Response(status_code=204)
 
 
 @app.get("/health")

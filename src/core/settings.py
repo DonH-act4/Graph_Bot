@@ -126,7 +126,16 @@ class Settings(BaseSettings):
     )  # Options: DatabaseType.SQLITE or DatabaseType.POSTGRES
     SQLITE_DB_PATH: str = "checkpoints.db"
     EVIDENCEGRAPH_DATA_DIR: Path = Path("data/evidencegraph")
+    EVIDENCEGRAPH_COOKIE_SECURE: bool = False  # Set true behind public HTTPS.
+    EVIDENCEGRAPH_ENFORCE_SESSION_IDENTITY: bool = False  # Enable after legacy chat migration.
+    EVIDENCEGRAPH_REQUIRE_LOGIN_FOR_CHAT: bool = False  # Enable after legacy chat migration.
+    EVIDENCEGRAPH_MAX_PDF_BYTES: int = Field(
+        default=25 * 1024 * 1024,
+        ge=1,
+        le=100 * 1024 * 1024,
+    )
     EVIDENCEGRAPH_GRAPH_MODEL: str | None = None
+    EVIDENCEGRAPH_GRAPH_MODELS: str | None = None
 
     # PostgreSQL Configuration
     POSTGRES_USER: str | None = None

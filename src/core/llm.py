@@ -128,13 +128,15 @@ def get_model(model_name: AllModelEnum, /) -> ModelT:
     if model_name in OllamaModelName:
         if not settings.OLLAMA_MODEL:
             raise ValueError("Ollama model must be configured")
-        if settings.OLLAMA_BASE_URL:
-            chat_ollama = ChatOllama(
-                model=settings.OLLAMA_MODEL, temperature=0.5, base_url=settings.OLLAMA_BASE_URL
-            )
-        else:
-            chat_ollama = ChatOllama(model=settings.OLLAMA_MODEL, temperature=0.5)
-        return chat_ollama
+        return ChatOllama(
+            model=settings.OLLAMA_MODEL,
+            temperature=0.5,
+            base_url=settings.OLLAMA_BASE_URL,
+            reasoning=settings.OLLAMA_MODEL.startswith("gpt-oss"),
+            num_ctx=16_384,
+            num_predict=8_192,
+            client_kwargs={"timeout": 240},
+        )
     if model_name in OpenRouterModelName:
         return ChatOpenAI(
             model=api_model_name,

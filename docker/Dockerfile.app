@@ -17,6 +17,9 @@ RUN uv sync --frozen --only-group client
 COPY src/client/ ./client/
 COPY src/schema/ ./schema/
 COPY src/voice/ ./voice/
+COPY src/graph_component.py .
+COPY src/graph_component.css .
+COPY src/graph_component.js .
 COPY src/streamlit_app.py .
 
 CMD ["streamlit", "run", "streamlit_app.py"]

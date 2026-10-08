@@ -11,3 +11,6 @@ venv
 .venv
 *.db
 privatecredentials/*
+**/node_modules
+frontend/dist
+**/*.tsbuildinfo

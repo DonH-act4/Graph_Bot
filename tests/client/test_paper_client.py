@@ -193,6 +193,24 @@ def test_request_and_read_graph_status():
     )
 
 
+def test_request_graph_sends_selected_model():
+    client = AgentClient(base_url="http://test", get_info=False)
+    request = httpx.Request("POST", f"http://test/papers/{PAPER_ID}/graph")
+    response = httpx.Response(
+        202,
+        json={
+            "document_id": PAPER_ID,
+            "state": "queued",
+            "requested_model": "gemini-selected",
+        },
+        request=request,
+    )
+    with patch("httpx.request", return_value=response) as send:
+        result = client.request_paper_graph(PAPER_ID, model="gemini-selected")
+    assert result.requested_model == "gemini-selected"
+    assert send.call_args.kwargs["json"] == {"model": "gemini-selected"}
+
+
 def test_get_graph_reads_validated_artifact():
     client = AgentClient(base_url="http://test", get_info=False)
     request = httpx.Request("GET", f"http://test/papers/{PAPER_ID}/graph")
@@ -204,7 +222,7 @@ def test_get_graph_reads_validated_artifact():
             "extractor_name": "google-gemini",
             "extractor_version": "test-model",
             "graph": {
-                "schema_version": "1",
+                "schema_version": "2",
                 "nodes": [
                     {
                         "node_id": "paper",
@@ -214,9 +232,36 @@ def test_get_graph_reads_validated_artifact():
                         "evidence": [
                             {"source_sha256": PAPER_ID, "block_id": "blk_test"}
                         ],
+                    },
+                    {
+                        "node_id": "outcome",
+                        "node_type": "observation",
+                        "domain_type": "primary_outcome",
+                        "name": "Response rate",
+                        "value": 63.5,
+                        "unit": "percent",
+                        "uncertainty": "95% CI 58.1–68.9",
+                        "conditions": "after 12 weeks",
+                        "document_sha256": PAPER_ID,
+                        "evidence": [
+                            {"source_sha256": PAPER_ID, "block_id": "blk_test"}
+                        ],
                     }
                 ],
-                "relations": [],
+                "relations": [
+                    {
+                        "relation_id": "reports_outcome",
+                        "source_node_id": "paper",
+                        "target_node_id": "outcome",
+                        "relation_type": "reports",
+                        "domain_relation": "reports_primary_outcome",
+                        "status": "candidate",
+                        "evidence": [
+                            {"source_sha256": PAPER_ID, "block_id": "blk_test"}
+                        ],
+                        "rationale": "The paper reports the outcome."
+                    }
+                ],
             },
         },
         request=request,
@@ -225,6 +270,9 @@ def test_get_graph_reads_validated_artifact():
         artifact = client.get_paper_graph(PAPER_ID)
     assert isinstance(artifact, GraphArtifact)
     assert artifact.graph.nodes[0].evidence[0].block_id == "blk_test"
+    assert artifact.graph.nodes[1].domain_type == "primary_outcome"
+    assert artifact.graph.nodes[1].value == 63.5
+    assert artifact.graph.relations[0].domain_relation == "reports_primary_outcome"
 
 
 def test_get_graph_rejects_invalid_response():

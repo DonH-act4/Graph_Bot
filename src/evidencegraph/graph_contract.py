@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from enum import StrEnum
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from evidencegraph.models import ParsedDocument
 
@@ -15,24 +17,166 @@ MAX_GRAPH_RELATIONS = 40
 
 class NodeType(StrEnum):
     PAPER = "paper"
+    ACTOR = "actor"
+    CONCEPT = "concept"
+    ARTIFACT = "artifact"
+    PROCESS = "process"
+    OBSERVATION = "observation"
+    CLAIM = "claim"
+    CONTEXT = "context"
+
+    # Version 1 compatibility. New extraction requests never expose these values.
     METHOD = "method"
     DATASET = "dataset"
     RESULT = "result"
-    CLAIM = "claim"
 
 
 class RelationType(StrEnum):
     INTRODUCES = "introduces"
     USES = "uses"
-    EVALUATED_ON = "evaluated_on"
+    STUDIES = "studies"
+    APPLIES_TO = "applies_to"
+    MEASURES = "measures"
+    PRODUCES = "produces"
     REPORTS = "reports"
+    SUPPORTS = "supports"
+    CONTRADICTS = "contradicts"
+    COMPARES_WITH = "compares_with"
     BUILDS_ON = "builds_on"
+    PART_OF = "part_of"
+
+    # Version 1 compatibility. New extraction requests never expose this value.
+    EVALUATED_ON = "evaluated_on"
 
 
 class RelationStatus(StrEnum):
     DIRECT = "direct"
     CANDIDATE = "candidate"
     UNCONFIRMED = "unconfirmed"
+
+
+V2_NODE_TYPES = frozenset(
+    {
+        NodeType.PAPER,
+        NodeType.ACTOR,
+        NodeType.CONCEPT,
+        NodeType.ARTIFACT,
+        NodeType.PROCESS,
+        NodeType.OBSERVATION,
+        NodeType.CLAIM,
+        NodeType.CONTEXT,
+    }
+)
+
+_RESEARCH_OBJECTS = frozenset(
+    {
+        NodeType.ACTOR,
+        NodeType.CONCEPT,
+        NodeType.ARTIFACT,
+        NodeType.PROCESS,
+        NodeType.CONTEXT,
+    }
+)
+
+V2_RELATION_ENDPOINTS: dict[
+    RelationType, tuple[frozenset[NodeType], frozenset[NodeType]]
+] = {
+    RelationType.INTRODUCES: (
+        frozenset({NodeType.PAPER, NodeType.ACTOR}),
+        frozenset(
+            {NodeType.CONCEPT, NodeType.ARTIFACT, NodeType.PROCESS, NodeType.CLAIM}
+        ),
+    ),
+    RelationType.USES: (
+        frozenset(
+            {NodeType.PAPER, NodeType.ACTOR, NodeType.ARTIFACT, NodeType.PROCESS}
+        ),
+        frozenset({NodeType.CONCEPT, NodeType.ARTIFACT, NodeType.PROCESS}),
+    ),
+    RelationType.STUDIES: (
+        frozenset({NodeType.PAPER, NodeType.ACTOR, NodeType.PROCESS}),
+        _RESEARCH_OBJECTS,
+    ),
+    RelationType.APPLIES_TO: (
+        frozenset(
+            {NodeType.CONCEPT, NodeType.ARTIFACT, NodeType.PROCESS, NodeType.CLAIM}
+        ),
+        frozenset(
+            {
+                NodeType.ACTOR,
+                NodeType.CONCEPT,
+                NodeType.ARTIFACT,
+                NodeType.PROCESS,
+                NodeType.CONTEXT,
+            }
+        ),
+    ),
+    RelationType.MEASURES: (
+        frozenset({NodeType.ACTOR, NodeType.ARTIFACT, NodeType.PROCESS}),
+        frozenset({NodeType.CONCEPT, NodeType.ARTIFACT, NodeType.CONTEXT}),
+    ),
+    RelationType.PRODUCES: (
+        frozenset({NodeType.ACTOR, NodeType.ARTIFACT, NodeType.PROCESS}),
+        frozenset({NodeType.ARTIFACT, NodeType.OBSERVATION, NodeType.CLAIM}),
+    ),
+    RelationType.REPORTS: (
+        frozenset({NodeType.PAPER, NodeType.ACTOR}),
+        frozenset({NodeType.OBSERVATION, NodeType.CLAIM}),
+    ),
+    RelationType.SUPPORTS: (
+        frozenset(
+            {
+                NodeType.ARTIFACT,
+                NodeType.PROCESS,
+                NodeType.OBSERVATION,
+                NodeType.CLAIM,
+            }
+        ),
+        frozenset({NodeType.CLAIM}),
+    ),
+    RelationType.CONTRADICTS: (
+        frozenset({NodeType.OBSERVATION, NodeType.CLAIM}),
+        frozenset({NodeType.CLAIM}),
+    ),
+    RelationType.COMPARES_WITH: (_RESEARCH_OBJECTS, _RESEARCH_OBJECTS),
+    RelationType.BUILDS_ON: (
+        frozenset(
+            {NodeType.PAPER, NodeType.CONCEPT, NodeType.ARTIFACT, NodeType.PROCESS}
+            | {NodeType.CLAIM}
+        ),
+        frozenset(
+            {NodeType.PAPER, NodeType.CONCEPT, NodeType.ARTIFACT, NodeType.PROCESS}
+            | {NodeType.CLAIM}
+        ),
+    ),
+    RelationType.PART_OF: (V2_NODE_TYPES, V2_NODE_TYPES),
+}
+
+V2_RELATION_TYPES = frozenset(V2_RELATION_ENDPOINTS)
+V3_NODE_TYPES = V2_NODE_TYPES
+V3_RELATION_ENDPOINTS = {
+    **V2_RELATION_ENDPOINTS,
+    RelationType.USES: (
+        frozenset({NodeType.ACTOR, NodeType.ARTIFACT, NodeType.PROCESS}),
+        frozenset({NodeType.CONCEPT, NodeType.ARTIFACT, NodeType.PROCESS}),
+    ),
+}
+V3_RELATION_TYPES = frozenset(V3_RELATION_ENDPOINTS)
+
+
+def relation_endpoints_are_valid(
+    relation_type: RelationType,
+    source_type: NodeType,
+    target_type: NodeType,
+    *,
+    schema_version: Literal["2", "3"] = "3",
+) -> bool:
+    """Return whether one versioned ontology relation uses an allowed endpoint pair."""
+    endpoints = (
+        V2_RELATION_ENDPOINTS if schema_version == "2" else V3_RELATION_ENDPOINTS
+    )
+    allowed_sources, allowed_targets = endpoints[relation_type]
+    return source_type in allowed_sources and target_type in allowed_targets
 
 
 class EvidenceRef(BaseModel):
@@ -52,8 +196,27 @@ class GraphNode(BaseModel):
     node_id: str = Field(min_length=1)
     node_type: NodeType
     name: str = Field(min_length=1)
+    domain_type: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_]{0,63}$",
+        description="Optional domain-specific subtype such as dataset, drug, or catalyst.",
+    )
     document_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     evidence: tuple[EvidenceRef, ...] = Field(min_length=1)
+    value: float | str | None = None
+    unit: str | None = None
+    uncertainty: str | None = None
+    conditions: str | None = None
+
+    @model_validator(mode="after")
+    def keep_measurements_on_observations(self) -> GraphNode:
+        measurement = (self.value, self.unit, self.uncertainty, self.conditions)
+        if any(item is not None for item in measurement) and self.node_type not in {
+            NodeType.OBSERVATION,
+            NodeType.RESULT,
+        }:
+            raise ValueError("measurement fields require an observation node")
+        return self
 
 
 class GraphRelation(BaseModel):
@@ -65,6 +228,11 @@ class GraphRelation(BaseModel):
     source_node_id: str = Field(min_length=1)
     target_node_id: str = Field(min_length=1)
     relation_type: RelationType
+    domain_relation: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_]{0,63}$",
+        description="Optional domain-specific relation such as trained_on.",
+    )
     status: RelationStatus
     evidence: tuple[EvidenceRef, ...]
     rationale: str = Field(min_length=1)
@@ -81,9 +249,18 @@ class GraphAnnotation(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    schema_version: str = "1"
+    schema_version: Literal["1", "2", "3"] = "1"
     nodes: tuple[GraphNode, ...] = Field(min_length=1, max_length=MAX_GRAPH_NODES)
     relations: tuple[GraphRelation, ...] = Field(max_length=MAX_GRAPH_RELATIONS)
+
+    @field_validator("schema_version", mode="before")
+    @classmethod
+    def normalize_legacy_schema_version(cls, value: object) -> object:
+        """Read known historical spellings without emitting them for new artifacts."""
+        if not isinstance(value, str):
+            return value
+        match = re.fullmatch(r"v?([123])(?:\.0){0,2}", value)
+        return match.group(1) if match else value
 
     @model_validator(mode="after")
     def validate_graph_structure(self) -> GraphAnnotation:
@@ -94,12 +271,49 @@ class GraphAnnotation(BaseModel):
         if len(relation_ids) != len(set(relation_ids)):
             raise ValueError("duplicate relation ID")
         known_nodes = set(node_ids)
+        node_index = {node.node_id: node for node in self.nodes}
         for relation in self.relations:
             if relation.source_node_id not in known_nodes:
                 raise ValueError(f"unknown source node: {relation.source_node_id}")
             if relation.target_node_id not in known_nodes:
                 raise ValueError(f"unknown target node: {relation.target_node_id}")
+        if self.schema_version in {"2", "3"}:
+            self._validate_versioned_ontology(node_index)
         return self
+
+    def _validate_versioned_ontology(
+        self, node_index: dict[str, GraphNode]
+    ) -> None:
+        schema_version: Literal["2", "3"] = (
+            "2" if self.schema_version == "2" else "3"
+        )
+        legacy_nodes = {NodeType.METHOD, NodeType.DATASET, NodeType.RESULT}
+        if any(node.node_type in legacy_nodes for node in self.nodes):
+            raise ValueError("ontology v2 graph contains a legacy node type")
+        paper_count = sum(
+            node.node_type is NodeType.PAPER for node in self.nodes
+        )
+        if paper_count != 1:
+            raise ValueError("ontology v2 graph requires exactly one paper node")
+        if any(
+            relation.relation_type is RelationType.EVALUATED_ON
+            for relation in self.relations
+        ):
+            raise ValueError("ontology v2 graph contains a legacy relation type")
+
+        for relation in self.relations:
+            source_type = node_index[relation.source_node_id].node_type
+            target_type = node_index[relation.target_node_id].node_type
+            if not relation_endpoints_are_valid(
+                relation.relation_type,
+                source_type,
+                target_type,
+                schema_version=schema_version,
+            ):
+                raise ValueError(
+                    f"invalid ontology v{schema_version} endpoints for "
+                    f"{relation.relation_type}: {source_type} -> {target_type}"
+                )
 
     @property
     def verified_relations(self) -> tuple[GraphRelation, ...]:

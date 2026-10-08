@@ -30,6 +30,10 @@ class PaperStatus(BaseModel):
     state: Literal["processing", "ready", "failed"]
     page_count: int | None = None
     block_count: int | None = None
+    stage: Literal[
+        "queued", "docling_parsing", "saving_evidence", "complete", "failed"
+    ] | None = None
+    progress_percent: int | None = Field(default=None, ge=0, le=100)
     error: str | None = None
 
 
@@ -64,6 +68,17 @@ class EvidenceBlockPage(BaseModel):
     items: tuple[EvidenceBlock, ...]
 
 
+class GraphRepairWarning(BaseModel):
+    code: Literal[
+        "model_output_repaired",
+        "invalid_relations_omitted",
+        "unsupported_relations_omitted",
+        "disconnected_nodes_omitted",
+    ]
+    message: str
+    relation_ids: tuple[str, ...] = ()
+
+
 class GraphStatus(BaseModel):
     document_id: str
     state: Literal["queued", "processing", "ready", "failed"]
@@ -71,7 +86,19 @@ class GraphStatus(BaseModel):
     relation_count: int | None = None
     extractor_name: str | None = None
     extractor_version: str | None = None
+    requested_model: str | None = None
     current_version: int | None = None
+    stage: Literal[
+        "queued",
+        "model_generation",
+        "ontology_validation",
+        "ontology_repair",
+        "saving_graph",
+        "complete",
+        "failed",
+    ] | None = None
+    progress_percent: int | None = Field(default=None, ge=0, le=100)
+    warnings: tuple[GraphRepairWarning, ...] = ()
     error: str | None = None
 
 
@@ -82,17 +109,49 @@ class GraphEvidenceRef(BaseModel):
 
 class GraphNode(BaseModel):
     node_id: str
-    node_type: Literal["paper", "method", "dataset", "result", "claim"]
+    node_type: Literal[
+        "paper",
+        "actor",
+        "concept",
+        "artifact",
+        "process",
+        "observation",
+        "claim",
+        "context",
+        "method",
+        "dataset",
+        "result",
+    ]
     name: str
+    domain_type: str | None = None
     document_sha256: str
     evidence: tuple[GraphEvidenceRef, ...]
+    value: float | str | None = None
+    unit: str | None = None
+    uncertainty: str | None = None
+    conditions: str | None = None
 
 
 class GraphRelation(BaseModel):
     relation_id: str
     source_node_id: str
     target_node_id: str
-    relation_type: Literal["introduces", "uses", "evaluated_on", "reports", "builds_on"]
+    relation_type: Literal[
+        "introduces",
+        "uses",
+        "studies",
+        "applies_to",
+        "measures",
+        "produces",
+        "reports",
+        "supports",
+        "contradicts",
+        "compares_with",
+        "builds_on",
+        "part_of",
+        "evaluated_on",
+    ]
+    domain_relation: str | None = None
     status: Literal["candidate", "unconfirmed"]
     evidence: tuple[GraphEvidenceRef, ...]
     rationale: str
@@ -122,6 +181,7 @@ class GraphArtifact(BaseModel):
     extractor_name: str
     extractor_version: str
     usage: GraphUsage | None = None
+    warnings: tuple[GraphRepairWarning, ...] = ()
     graph: CandidateGraph
 
 
@@ -144,6 +204,7 @@ class GraphVersionSummary(BaseModel):
     extractor_version: str
     node_count: int = Field(ge=0)
     relation_count: int = Field(ge=0)
+    warning_count: int = Field(default=0, ge=0)
 
 
 class GraphVersions(BaseModel):
@@ -274,14 +335,24 @@ class AgentClient:
         except ValueError as exc:
             raise AgentClientError("Paper service returned an invalid evidence block") from exc
 
-    def request_paper_graph(self, document_id: str) -> GraphStatus:
+    def request_paper_graph(
+        self, document_id: str, *, model: str | None = None
+    ) -> GraphStatus:
         """Queue candidate extraction after PDF parsing is ready."""
-        return self._paper_graph_status_request("POST", f"/papers/{document_id}/graph")
+        return self._paper_graph_status_request(
+            "POST",
+            f"/papers/{document_id}/graph",
+            json_body={"model": model} if model else None,
+        )
 
-    def rebuild_paper_graph(self, document_id: str) -> GraphStatus:
+    def rebuild_paper_graph(
+        self, document_id: str, *, model: str | None = None
+    ) -> GraphStatus:
         """Queue a new immutable version while preserving the current graph."""
         return self._paper_graph_status_request(
-            "POST", f"/papers/{document_id}/graph/rebuild"
+            "POST",
+            f"/papers/{document_id}/graph/rebuild",
+            json_body={"model": model} if model else None,
         )
 
     def get_paper_graph_status(self, document_id: str) -> GraphStatus:
@@ -372,13 +443,19 @@ class AgentClient:
         except ValueError as exc:
             raise AgentClientError("Paper service returned invalid graph reviews") from exc
 
-    def _paper_graph_status_request(self, method: str, path: str) -> GraphStatus:
+    def _paper_graph_status_request(
+        self, method: str, path: str, *, json_body: dict[str, str] | None = None
+    ) -> GraphStatus:
+        request_options: dict[str, Any] = {}
+        if json_body is not None:
+            request_options["json"] = json_body
         try:
             response = httpx.request(
                 method,
                 f"{self.base_url}{path}",
                 headers=self._headers,
                 timeout=10.0,
+                **request_options,
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:

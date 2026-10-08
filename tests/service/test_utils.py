@@ -42,3 +42,19 @@ def test_messages_tool_calls() -> None:
     assert ai_message.tool_calls[0]["id"] == "call_Jja7"
     assert ai_message.tool_calls[0]["name"] == "test_tool"
     assert ai_message.tool_calls[0]["args"] == {"x": 1, "y": 2}
+
+
+def test_human_message_preserves_resolved_evidence_for_history() -> None:
+    evidence = {
+        "document_id": "a" * 64,
+        "blocks": [{"block_id": "blk_123", "pages": [2], "text": "Source text"}],
+    }
+    message = HumanMessage(
+        content="What does this mean?",
+        additional_kwargs={"evidence_context": evidence},
+    )
+
+    serialized = langchain_to_chat_message(message)
+
+    assert serialized.content == "What does this mean?"
+    assert serialized.custom_data["evidence_context"] == evidence

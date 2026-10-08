@@ -4,22 +4,22 @@ import re
 import urllib.parse
 import uuid
 from collections.abc import AsyncGenerator
+from html import escape
 from typing import Any
 
 import streamlit as st
 from dotenv import load_dotenv
 from pydantic import ValidationError
-from streamlit_cytoscape import EdgeStyle, Event, NodeStyle, streamlit_cytoscape
 
 from client import (
     AgentClient,
     AgentClientError,
     EvidenceBlockPage,
     GraphArtifact,
-    GraphReviews,
     GraphStatus,
     PaperStatus,
 )
+from graph_component import render_force_graph
 from schema import ChatHistory, ChatMessage, UserThreads
 from schema.task_data import TaskData, TaskDataStatus
 from voice import VoiceManager
@@ -35,8 +35,8 @@ from voice import VoiceManager
 # The app heavily uses AgentClient to interact with the agent's FastAPI endpoints.
 
 
-APP_TITLE = "Agent Service Toolkit"
-APP_ICON = "🧰"
+APP_TITLE = "EvidenceGraph"
+APP_ICON = "◈"
 USER_ID_COOKIE = "user_id"
 DOCUMENT_ID_PARAM = "document_id"
 _DOCUMENT_ID_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -98,10 +98,100 @@ def fetch_user_threads_cached(
     return client.get_user_threads(user_id=user_id, agent=agent_id, limit=limit)
 
 
+def draw_brand_header() -> None:
+    """Render the compact product identity used by the paper workspace."""
+    st.html(
+        """
+        <header class="eg-hero">
+          <div class="eg-kicker">Document intelligence</div>
+          <h1>EvidenceGraph</h1>
+          <p>Research relationships you can touch, trace, and verify against the source.</p>
+        </header>
+        """
+    )
+
+
+def clear_paper_context() -> None:
+    """Leave the paper workspace without carrying document state into chat."""
+    for key in (
+        "paper_id",
+        "paper_block_offset",
+        "paper_graph_requested",
+        "paper_graph_version",
+        "paper_graph_selection",
+    ):
+        st.session_state.pop(key, None)
+    if DOCUMENT_ID_PARAM in st.query_params:
+        del st.query_params[DOCUMENT_ID_PARAM]
+
+
+def draw_paper_chat_sidebar(agent_client: AgentClient, user_id: str) -> None:
+    """Keep chat navigation available without restoring the full toolkit sidebar."""
+    with st.sidebar:
+        st.header(f"{APP_ICON} {APP_TITLE}")
+        st.caption("Auditable research workspace")
+
+        if st.button(
+            ":material/chat: New Chat",
+            key="paper_new_chat",
+            use_container_width=True,
+        ):
+            clear_paper_context()
+            st.session_state.messages = []
+            st.session_state.thread_id = str(uuid.uuid4())
+            st.session_state.pop("last_audio", None)
+            st.rerun()
+
+        with st.expander(":material/history: Previous Chats", expanded=False):
+            try:
+                url_agent = st.query_params.get("agent")
+                valid_agents = [agent.key for agent in agent_client.info.agents]
+                agent_client.agent = (
+                    url_agent
+                    if url_agent in valid_agents
+                    else agent_client.info.default_agent
+                )
+                threads = fetch_user_threads_cached(
+                    base_url=agent_client.base_url,
+                    user_id=user_id,
+                    agent_id=agent_client.agent,
+                    limit=20,
+                ).threads
+            except AgentClientError as error:
+                st.caption(f"Couldn't load conversation history: {error}")
+                threads = []
+
+            for thread in threads:
+                label = thread.title or f"Chat {thread.thread_id[:8]}"
+                if not st.button(
+                    label,
+                    key=f"paper_thread_{thread.thread_id}",
+                    use_container_width=True,
+                ):
+                    continue
+                try:
+                    history: ChatHistory = agent_client.get_history(
+                        thread_id=thread.thread_id,
+                        agent=thread.agent_id,
+                    )
+                except AgentClientError:
+                    st.error("Could not load that conversation.")
+                    continue
+                clear_paper_context()
+                st.session_state.messages = history.messages
+                st.session_state.thread_id = thread.thread_id
+                st.query_params["thread_id"] = thread.thread_id
+                st.query_params["agent"] = thread.agent_id
+                st.session_state.pop("last_audio", None)
+                st.rerun()
+
+
 async def main() -> None:
     st.set_page_config(
         page_title=APP_TITLE,
         page_icon=APP_ICON,
+        layout="wide",
+        initial_sidebar_state="expanded",
         menu_items={},
     )
 
@@ -114,6 +204,108 @@ async def main() -> None:
                 height: 0%;
                 position: fixed;
             }
+        .stApp {
+            background:
+                radial-gradient(circle at 12% 8%, rgba(74, 99, 255, .07), transparent 28rem),
+                radial-gradient(circle at 88% 18%, rgba(33, 208, 168, .055), transparent 24rem),
+                var(--background-color);
+        }
+        [data-testid="stMainBlockContainer"] {
+            max-width: 1180px;
+            padding-top: 2rem;
+        }
+        [data-testid="stSidebar"] {
+            border-right: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+        }
+        .eg-hero {
+            padding: 1.3rem 0 1.7rem;
+        }
+        .eg-kicker {
+            color: #6c7cff;
+            font-size: .72rem;
+            font-weight: 700;
+            letter-spacing: .16em;
+            text-transform: uppercase;
+        }
+        .eg-hero h1 {
+            margin: .3rem 0 .35rem;
+            font-size: clamp(2.2rem, 5vw, 4.1rem);
+            letter-spacing: -.055em;
+            line-height: .98;
+        }
+        .eg-hero p {
+            max-width: 650px;
+            margin: 0;
+            color: color-mix(in srgb, currentColor 58%, transparent);
+            font-size: 1.02rem;
+        }
+        .eg-document-bar {
+            display: flex;
+            align-items: center;
+            gap: .65rem;
+            margin: .1rem 0 .9rem;
+            color: color-mix(in srgb, currentColor 62%, transparent);
+            font-size: .82rem;
+        }
+        .eg-document-bar span:first-child {
+            width: .55rem;
+            height: .55rem;
+            border-radius: 50%;
+            background: #42d6a4;
+            box-shadow: 0 0 0 .3rem rgba(66, 214, 164, .12);
+        }
+        .eg-section-head {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 1rem;
+            margin: 1.1rem 0 .75rem;
+        }
+        .eg-section-head h2 {
+            margin: 0;
+            font-size: 1.35rem;
+            letter-spacing: -.025em;
+        }
+        .eg-section-head span {
+            color: color-mix(in srgb, currentColor 52%, transparent);
+            font-size: .78rem;
+        }
+        .eg-source-head {
+            margin: 1.6rem 0 .7rem;
+        }
+        .eg-source-head span {
+            display: block;
+            margin-bottom: .3rem;
+            color: #6c7cff;
+            font-size: .7rem;
+            font-weight: 700;
+            letter-spacing: .13em;
+            text-transform: uppercase;
+        }
+        .eg-source-head strong {
+            font-size: 1rem;
+            font-weight: 600;
+        }
+        .eg-evidence {
+            margin: 0 0 .7rem;
+            padding: 1rem 1.1rem;
+            border: 1px solid color-mix(in srgb, currentColor 9%, transparent);
+            border-radius: 1rem;
+            background: color-mix(in srgb, var(--secondary-background-color) 70%, transparent);
+        }
+        .eg-evidence div {
+            margin-bottom: .45rem;
+            color: #6c7cff;
+            font-size: .68rem;
+            font-weight: 700;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+        }
+        .eg-evidence p {
+            margin: 0;
+            color: color-mix(in srgb, currentColor 86%, transparent);
+            line-height: 1.65;
+        }
         </style>
         """,
     )
@@ -140,6 +332,15 @@ async def main() -> None:
             st.markdown("The service might be booting up. Try again in a few seconds.")
             st.stop()
     agent_client: AgentClient = st.session_state.agent_client
+
+    paper_mode_requested = bool(
+        st.session_state.get("paper_id") or st.query_params.get(DOCUMENT_ID_PARAM)
+    )
+    if paper_mode_requested:
+        draw_paper_chat_sidebar(agent_client, user_id)
+        draw_brand_header()
+        draw_paper_upload(agent_client)
+        return
 
     # Initialize voice manager (once per session)
     if "voice_manager" not in st.session_state:
@@ -171,10 +372,7 @@ async def main() -> None:
     # Config options
     with st.sidebar:
         st.header(f"{APP_ICON} {APP_TITLE}")
-
-        ""
-        "Full toolkit for running an AI agent service built with LangGraph, FastAPI and Streamlit"
-        ""
+        st.caption("Auditable research workspace")
 
         if st.button(":material/chat: New Chat", use_container_width=True):
             st.session_state.messages = []
@@ -253,24 +451,6 @@ async def main() -> None:
             # Display user ID (for debugging or user information)
             st.text_input("User ID (read-only)", value=user_id, disabled=True)
 
-        @st.dialog("Architecture")
-        def architecture_dialog() -> None:
-            st.image(
-                "https://github.com/JoshuaC215/agent-service-toolkit/blob/main/media/agent_architecture.png?raw=true"
-            )
-            "[View full size on Github](https://github.com/JoshuaC215/agent-service-toolkit/blob/main/media/agent_architecture.png)"
-            st.caption(
-                "App hosted on [Streamlit Cloud](https://share.streamlit.io/) with FastAPI service running in [Azure](https://learn.microsoft.com/en-us/azure/app-service/)"
-            )
-
-        if st.button(":material/schema: Architecture", use_container_width=True):
-            architecture_dialog()
-
-        with st.popover(":material/policy: Privacy", use_container_width=True):
-            st.write(
-                "Prompts, responses and feedback in this app are anonymously recorded and saved to LangSmith for product evaluation and improvement purposes only."
-            )
-
         @st.dialog("Share/resume chat")
         def share_chat_dialog() -> None:
             # st.context.url is the browser URL (with query string stripped). Rebuild
@@ -292,12 +472,18 @@ async def main() -> None:
         if st.button(":material/upload: Share/resume chat", use_container_width=True):
             share_chat_dialog()
 
-        "[View the source code](https://github.com/JoshuaC215/agent-service-toolkit)"
-        st.caption(
-            "Made with :material/favorite: by [Joshua](https://www.linkedin.com/in/joshua-k-carroll/) in Oakland"
-        )
+        st.divider()
+        st.caption("Local development · fixed research samples")
+        st.caption("Model requests and feedback may be recorded by configured providers.")
 
+    draw_brand_header()
     draw_paper_upload(agent_client)
+
+    has_paper_context = bool(
+        st.session_state.get("paper_id") or st.query_params.get(DOCUMENT_ID_PARAM)
+    )
+    if has_paper_context:
+        return
 
     # Draw existing messages
     messages: list[ChatMessage] = st.session_state.messages
@@ -403,26 +589,31 @@ async def main() -> None:
 
 
 def draw_paper_upload(agent_client: AgentClient) -> None:
-    """Show the limited phase 1 PDF workflow without claiming a graph exists yet."""
-    # UI guard only; the API independently enforces this exact-sample boundary.
-    max_sample_bytes = 2_215_244
+    """Show the phase 1 PDF workflow with the same local upload ceiling as nginx."""
+    # UI guard only; the API independently streams and enforces the same ceiling.
+    max_pdf_bytes = 25 * 1024 * 1024
     has_paper_context = bool(
         st.session_state.get("paper_id") or st.query_params.get(DOCUMENT_ID_PARAM)
     )
+    ready_document_id: str | None = None
     with st.expander(
-        "EvidenceGraph · internal PDF sample", expanded=has_paper_context
+        "Document" if has_paper_context else "Add a research paper",
+        expanded=not has_paper_context,
     ):
         restored_from_url, restore_error = restore_paper_from_query_params()
         st.caption(
-            "Only the three exact phase 0 sample PDFs are accepted. "
-            "Parsing does not require an LLM API key."
+            "Phase 1 preview · accepts text-based research PDFs up to 25 MiB. "
+            "PDF parsing does not use a generative model."
         )
         if restore_error:
             st.error(restore_error)
-        uploaded = st.file_uploader("Choose a sample PDF", type=["pdf"], key="paper_pdf")
-        too_large = uploaded is not None and uploaded.size > max_sample_bytes
+        uploaded = st.file_uploader("Choose a research PDF", type=["pdf"], key="paper_pdf")
+        too_large = uploaded is not None and uploaded.size > max_pdf_bytes
         if too_large:
-            st.error("This PDF exceeds the internal sample size limit.")
+            st.error(
+                f"{uploaded.name} is {uploaded.size / (1024 * 1024):.2f} MiB; "
+                "the maximum is 25 MiB."
+            )
         if st.button("Upload PDF", disabled=uploaded is None or too_large, key="paper_upload"):
             try:
                 result = agent_client.upload_paper(uploaded.getvalue())
@@ -451,34 +642,35 @@ def draw_paper_upload(agent_client: AgentClient) -> None:
         if status.state == "processing":
             st.info("PDF is being parsed. Refresh to check again.")
         elif status.state == "ready":
-            st.success(
-                f"Parsing complete: {status.page_count} pages, {status.block_count} evidence blocks."
+            st.html(
+                f"""
+                <div class="eg-document-bar">
+                  <span></span>
+                  <div>{status.page_count} pages · {status.block_count} source blocks · ready</div>
+                </div>
+                """
             )
-            draw_candidate_graph(agent_client, document_id)
-            with st.expander("Browse all parsed evidence blocks", expanded=False):
-                draw_evidence_blocks(agent_client, document_id)
+            ready_document_id = document_id
         elif status.state == "failed":
             st.error(status.error or "PDF processing failed. Upload the sample again to retry.")
         else:
             st.warning("Unknown processing state returned by the service.")
 
+    if ready_document_id is not None:
+        draw_paper_graph(agent_client, ready_document_id)
+        with st.expander("All source blocks", expanded=False):
+            draw_evidence_blocks(agent_client, ready_document_id)
 
-def draw_candidate_graph(agent_client: AgentClient, document_id: str) -> None:
-    """Control extraction and show the first auditable graph representation."""
-    st.markdown("#### Candidate evidence graph")
-    st.caption(
-        "Machine-extracted nodes and relationships remain candidates until human review."
-    )
-    if st.button("Generate candidate graph", key="paper_graph_generate"):
+
+def draw_paper_graph(agent_client: AgentClient, document_id: str) -> None:
+    """Automatically extract and show the current graph for a ready paper."""
+    if not st.session_state.get("paper_graph_requested", False):
         try:
             agent_client.request_paper_graph(document_id)
             st.session_state.paper_graph_requested = True
         except AgentClientError as exc:
             st.error(str(exc))
-    if st.button("Refresh graph status", key="paper_graph_refresh"):
-        st.session_state.paper_graph_requested = True
-    if not st.session_state.get("paper_graph_requested", False):
-        return
+            return
 
     try:
         status: GraphStatus = agent_client.get_paper_graph_status(document_id)
@@ -486,40 +678,35 @@ def draw_candidate_graph(agent_client: AgentClient, document_id: str) -> None:
         st.error(str(exc))
         return
     if status.state in {"queued", "processing"}:
-        st.info(f"Graph extraction is {status.state}. Refresh to check again.")
+        st.info(f"Building the evidence graph · {status.state}")
+        st.button("Refresh", key="paper_graph_refresh")
         if status.current_version is None:
             return
     elif status.state == "failed":
-        st.error(status.error or "Graph extraction failed. Generate again to retry.")
+        st.error(status.error or "Graph extraction failed.")
+        if st.button("Try again", key="paper_graph_retry"):
+            try:
+                agent_client.request_paper_graph(document_id)
+                st.rerun()
+            except AgentClientError as exc:
+                st.error(str(exc))
         if status.current_version is None:
             return
-    elif status.state == "ready":
-        st.success(
-            f"Candidate graph ready: {status.node_count} nodes, "
-            f"{status.relation_count} relationships."
-        )
 
-    try:
-        versions = agent_client.get_paper_graph_versions(document_id)
-    except AgentClientError as exc:
-        st.error(str(exc))
-        return
-    version_numbers = [item.version for item in versions.versions]
-    current_index = version_numbers.index(versions.current_version)
-    selected_version = st.selectbox(
-        "Graph version",
-        version_numbers,
-        index=current_index,
-        format_func=lambda version: (
-            f"v{version} (current)" if version == versions.current_version else f"v{version}"
-        ),
-        key="paper_graph_version",
-    )
-    st.caption(
-        f"Current graph: v{versions.current_version} · "
-        f"{len(versions.versions)} stored version(s)."
-    )
-    if st.button("Rebuild candidate graph", key="paper_graph_rebuild"):
+    rebuild_requested = False
+    with st.expander("Model details", expanded=False):
+        detail_column, rebuild_column = st.columns([2, 1], vertical_alignment="bottom")
+        with detail_column:
+            st.markdown("**Ontology v2 · Current graph**")
+            st.caption(
+                f"Extractor: {status.extractor_name or 'unknown'} · "
+                f"model: {status.extractor_version or 'unknown'}"
+            )
+        with rebuild_column:
+            rebuild_requested = st.button(
+                "Regenerate", key="paper_graph_rebuild", use_container_width=True
+            )
+    if rebuild_requested:
         try:
             agent_client.rebuild_paper_graph(document_id)
             st.rerun()
@@ -527,126 +714,66 @@ def draw_candidate_graph(agent_client: AgentClient, document_id: str) -> None:
             st.error(str(exc))
 
     try:
-        artifact = agent_client.get_paper_graph(document_id, version=selected_version)
-        reviews = agent_client.get_paper_graph_reviews(
-            document_id, version=selected_version
-        )
+        artifact = agent_client.get_paper_graph(document_id)
     except AgentClientError as exc:
         st.error(str(exc))
         return
-    draw_graph_artifact(artifact, reviews)
+    draw_graph_artifact(artifact)
 
 
-def draw_graph_artifact(artifact: GraphArtifact, reviews: GraphReviews) -> None:
-    """Render an interactive typed network with one evidence detail panel."""
-    reviewed = len(reviews.reviews)
-    total_relations = len(artifact.graph.relations)
-    node_metric, relation_metric, review_metric = st.columns(3)
-    node_metric.metric("Nodes", len(artifact.graph.nodes))
-    relation_metric.metric("Relationships", total_relations)
-    review_metric.metric("Reviewed", f"{reviewed}/{total_relations}")
-
-    with st.expander("Graph run details", expanded=False):
-        st.caption(
-            f"Graph v{artifact.graph_version} · extractor: {artifact.extractor_name} · "
-            f"model/version: {artifact.extractor_version}"
-        )
-        if artifact.usage is None:
-            st.caption("Token usage unavailable for this graph version.")
-        else:
-            usage = artifact.usage
-            st.caption(
-                f"Tokens: {usage.input_tokens:,} input · {usage.output_tokens:,} output · "
-                f"{usage.thinking_tokens:,} thinking · {usage.total_tokens:,} total"
-            )
-            if usage.paid_standard_estimate_usd is not None:
-                st.caption(
-                    f"Paid Standard reference: ${usage.paid_standard_estimate_usd:.6f} USD · "
-                    "Free Tier actual charge is $0 while within its limits."
-                )
-                if usage.pricing_basis:
-                    st.caption(f"Pricing snapshot: {usage.pricing_basis}")
-
-    st.markdown(
-        """
-        <div style="display:flex;flex-wrap:wrap;gap:.45rem;margin:.2rem 0 .65rem 0">
-          <span style="color:#7c3aed">● Paper</span>
-          <span style="color:#0ea5e9">● Method</span>
-          <span style="color:#22c55e">● Dataset</span>
-          <span style="color:#f59e0b">● Result</span>
-          <span style="color:#f43f5e">● Claim</span>
+def draw_graph_artifact(artifact: GraphArtifact) -> None:
+    """Render the AI-generated network with a minimal source panel."""
+    st.html(
+        f"""
+        <div class="eg-section-head">
+          <h2>Knowledge map</h2>
+          <span>{len(artifact.graph.nodes)} entities · {len(artifact.graph.relations)} relationships</span>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
-    st.caption(
-        "Drag nodes to explore · scroll to zoom · click any node or arrow to inspect its evidence."
+    stored = st.session_state.get("paper_graph_selection")
+    stored_matches = (
+        isinstance(stored, dict)
+        and stored.get("document_sha256") == artifact.document_sha256
+        and stored.get("graph_version") == artifact.graph_version
     )
-    event = streamlit_cytoscape(
-        elements=build_graph_elements(artifact, reviews),
-        layout=build_graph_layout(),
-        node_styles=build_graph_node_styles(),
-        edge_styles=build_graph_edge_styles(),
-        height=600,
+    stored_event = stored.get("event") if stored_matches else None
+    stored_event_data = stored_event.get("data") if isinstance(stored_event, dict) else None
+    selected_target_id = (
+        stored_event_data.get("target_id") if isinstance(stored_event_data, dict) else None
+    )
+    result = render_force_graph(
+        build_graph_elements(artifact),
+        selected_id=selected_target_id,
         key=f"paper_graph_network_{artifact.document_sha256}_{artifact.graph_version}",
-        events=[
-            Event("inspect_node", "tap", "node"),
-            Event("inspect_relation", "tap", "edge"),
-        ],
     )
+    event = getattr(result, "selected", None)
     selection = resolve_graph_selection(artifact, event)
     if selection is not None:
-        kind, index = selection
-        selected_id = (
-            artifact.graph.nodes[index].node_id
-            if kind == "node"
-            else artifact.graph.relations[index].relation_id
-        )
         st.session_state.paper_graph_selection = {
             "document_sha256": artifact.document_sha256,
             "graph_version": artifact.graph_version,
             "event": event,
-            "selected_id": selected_id,
         }
-    else:
-        stored = st.session_state.get("paper_graph_selection")
-        if (
-            isinstance(stored, dict)
-            and stored.get("document_sha256") == artifact.document_sha256
-            and stored.get("graph_version") == artifact.graph_version
-        ):
-            selection = resolve_graph_selection(artifact, stored.get("event"))
-    draw_graph_inspector(artifact, reviews, selection)
-
-
-def build_graph_layout() -> dict[str, Any]:
-    """Return a stable hub-and-ring layout that also fits narrow screens."""
-    return {
-        "name": "concentric",
-        "animate": False,
-        "fit": True,
-        "padding": 48,
-        "avoidOverlap": True,
-        "minNodeSpacing": 20,
-        "spacingFactor": 0.9,
-    }
+    elif stored_matches:
+        selection = resolve_graph_selection(artifact, stored_event)
+    draw_graph_inspector(artifact, selection)
 
 
 def build_graph_elements(
-    artifact: GraphArtifact, reviews: GraphReviews | None = None
+    artifact: GraphArtifact,
 ) -> dict[str, list[dict[str, dict[str, Any]]]]:
-    """Convert the audited graph artifact into Cytoscape elements."""
-    decision_by_id = {
-        review.relation_id: review.decision for review in reviews.reviews
-    } if reviews else {}
+    """Convert the generated graph into browser-safe force graph elements."""
     nodes = [
         {
             "data": {
                 "id": f"node:{node.node_id}",
                 "domain_id": node.node_id,
-                "label": node.node_type.upper(),
+                "label": (node.domain_type or node.node_type).upper(),
                 "name": node.name,
+                "display_name": compact_graph_label(node.name, node.node_type),
                 "type": node.node_type,
+                "domain_type": node.domain_type,
                 "evidence_count": len(node.evidence),
             }
         }
@@ -654,7 +781,6 @@ def build_graph_elements(
     ]
     edges = []
     for relation in artifact.graph.relations:
-        review_status = decision_by_id.get(relation.relation_id, relation.status)
         edges.append(
             {
                 "data": {
@@ -662,10 +788,10 @@ def build_graph_elements(
                     "domain_id": relation.relation_id,
                     "source": f"node:{relation.source_node_id}",
                     "target": f"node:{relation.target_node_id}",
-                    "label": f"RELATION_{review_status.upper()}",
-                    "relation_type": relation.relation_type,
-                    "review_status": review_status,
-                    "rationale": relation.rationale,
+                    "label": "RELATION",
+                    "relation_type": relation.domain_relation
+                    or relation.relation_type,
+                    "core_relation_type": relation.relation_type,
                     "evidence_count": len(relation.evidence),
                 }
             }
@@ -673,77 +799,20 @@ def build_graph_elements(
     return {"nodes": nodes, "edges": edges}
 
 
-def build_graph_node_styles() -> list[NodeStyle]:
-    """Use stable semantic colors and circular shapes for graph nodes."""
-    visuals = {
-        "PAPER": ("#7c3aed", 86),
-        "METHOD": ("#0ea5e9", 74),
-        "DATASET": ("#22c55e", 68),
-        "RESULT": ("#f59e0b", 64),
-        "CLAIM": ("#f43f5e", 60),
-    }
-    return [
-        NodeStyle(
-            label=node_type,
-            color=color,
-            caption="name",
-            custom_styles={
-                "shape": "ellipse",
-                "width": size,
-                "height": size,
-                "border-width": 3,
-                "border-color": "#ffffff",
-                "color": "#ffffff",
-                "font-size": 11,
-                "font-weight": 650,
-                "text-wrap": "wrap",
-                "text-max-width": size - 12,
-                "text-valign": "center",
-                "text-halign": "center",
-                "text-outline-color": color,
-                "text-outline-width": 1,
-                "shadow-blur": 12,
-                "shadow-color": color,
-                "shadow-opacity": 0.24,
-            },
-        )
-        for node_type, (color, size) in visuals.items()
-    ]
-
-
-def build_graph_edge_styles() -> list[EdgeStyle]:
-    """Make relation review state visible without duplicating it as a list."""
-    visuals = {
-        "RELATION_CANDIDATE": ("#64748b", "dashed", 3),
-        "RELATION_ACCEPTED": ("#16a34a", "solid", 4),
-        "RELATION_REJECTED": ("#dc2626", "dotted", 3),
-    }
-    return [
-        EdgeStyle(
-            label=status,
-            color=color,
-            caption="relation_type",
-            directed=True,
-            curve_style="bezier",
-            custom_styles={
-                "width": width,
-                "line-style": line_style,
-                "arrow-scale": 1.1,
-                "font-size": 10,
-                "font-weight": 600,
-                "text-background-opacity": 0.92,
-                "text-background-padding": 3,
-                "text-background-shape": "round-rectangle",
-            },
-        )
-        for status, (color, line_style, width) in visuals.items()
-    ]
+def compact_graph_label(name: str, node_type: str) -> str:
+    """Keep graph labels readable while preserving the full name in details."""
+    if node_type == "paper" and ":" in name:
+        return f"{name.split(':', maxsplit=1)[0]} paper"
+    compact = re.sub(r"\s+plus\s+(English\s+)?", " + ", name, flags=re.IGNORECASE)
+    if len(compact) <= 24:
+        return compact
+    return f"{compact[:21].rstrip()}…"
 
 
 def resolve_graph_selection(
     artifact: GraphArtifact, event: object
 ) -> tuple[str, int] | None:
-    """Resolve a Cytoscape event to an audited node or relation index."""
+    """Resolve a browser graph event to an audited node or relation index."""
     if not isinstance(event, dict):
         return None
     data = event.get("data")
@@ -768,34 +837,34 @@ def resolve_graph_selection(
 
 def draw_graph_inspector(
     artifact: GraphArtifact,
-    reviews: GraphReviews,
     selection: tuple[str, int] | None,
 ) -> None:
-    """Resolve the clicked graph item to evidence through the API."""
+    """Resolve the clicked graph item to its source text."""
     node_by_id = {node.node_id: node for node in artifact.graph.nodes}
-    st.markdown("#### Selected evidence")
     if selection is None:
-        st.info("Click a node or relationship in the graph to inspect its source evidence.")
+        st.caption("Select a relationship to reveal its source text.")
         return
     kind, index = selection
     if kind == "node":
         node = artifact.graph.nodes[index]
-        st.markdown(f"**{node.name}** · `{node.node_type}`")
+        selected_title = node.name
         refs = node.evidence
     else:
         relation = artifact.graph.relations[index]
-        decision_by_id = {
-            review.relation_id: review.decision for review in reviews.reviews
-        }
-        decision = decision_by_id.get(relation.relation_id)
         source = node_by_id[relation.source_node_id].name
         target = node_by_id[relation.target_node_id].name
-        st.markdown(
-            f"**{source} —{relation.relation_type}→ {target}** · "
-            f"`{decision or relation.status}`"
-        )
-        st.caption(relation.rationale)
+        relation_label = relation.domain_relation or relation.relation_type
+        selected_title = f"{source} · {relation_label.replace('_', ' ')} · {target}"
         refs = relation.evidence
+
+    st.html(
+        f"""
+        <div class="eg-source-head">
+          <span>Source evidence</span>
+          <strong>{escape(selected_title)}</strong>
+        </div>
+        """
+    )
 
     agent_client: AgentClient = st.session_state.agent_client
     for ref in refs:
@@ -805,36 +874,15 @@ def draw_graph_inspector(
             st.error(str(exc))
             continue
         pages = sorted({location.page_number for location in block.locations})
-        with st.container(border=True):
-            st.caption(f"{ref.block_id} · pages {', '.join(map(str, pages))}")
-            st.write(block.text)
-
-    if kind == "relation":
-        accept, reject = st.columns(2)
-        if accept.button(
-            "Accept relationship",
-            key=f"accept_{relation.relation_id}",
-            disabled=decision == "accepted",
-        ):
-            try:
-                agent_client.review_paper_graph_relation(
-                    artifact.document_sha256, relation.relation_id, "accepted"
-                )
-                st.rerun()
-            except AgentClientError as exc:
-                st.error(str(exc))
-        if reject.button(
-            "Reject relationship",
-            key=f"reject_{relation.relation_id}",
-            disabled=decision == "rejected",
-        ):
-            try:
-                agent_client.review_paper_graph_relation(
-                    artifact.document_sha256, relation.relation_id, "rejected"
-                )
-                st.rerun()
-            except AgentClientError as exc:
-                st.error(str(exc))
+        page_label = " / ".join(f"Page {page}" for page in pages)
+        st.html(
+            f"""
+            <article class="eg-evidence">
+              <div>{escape(page_label)}</div>
+              <p>{escape(block.text)}</p>
+            </article>
+            """
+        )
 
 
 def draw_evidence_blocks(agent_client: AgentClient, document_id: str) -> None:

@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import langsmith
@@ -9,6 +10,11 @@ from langgraph.types import Interrupt, StateSnapshot
 from agents.agents import Agent
 from schema import ChatHistory, ChatMessage, ServiceMetadata
 from schema.models import AnthropicModelName, OpenAIModelName
+from service import app
+from service.papers import get_paper_store
+
+DOCUMENT_ID = "a" * 64
+EVIDENCE_BLOCK_ID = "blk_" + "b" * 24
 
 
 def test_invoke(test_client, mock_agent) -> None:
@@ -26,6 +32,99 @@ def test_invoke(test_client, mock_agent) -> None:
     output = ChatMessage.model_validate(response.json())
     assert output.type == "ai"
     assert output.content == ANSWER
+
+
+def test_invoke_resolves_selected_evidence_before_calling_agent(
+    test_client, mock_agent
+) -> None:
+    class EvidenceStore:
+        def get(self, document_id: str):
+            return object() if document_id == DOCUMENT_ID else None
+
+        def get_block(self, document_id: str, block_id: str):
+            if document_id != DOCUMENT_ID or block_id != EVIDENCE_BLOCK_ID:
+                return None
+            return SimpleNamespace(
+                block_id=block_id,
+                text="The reported result is 88.5.",
+                locations=(
+                    SimpleNamespace(page_number=3),
+                    SimpleNamespace(page_number=3),
+                ),
+            )
+
+    mock_agent.ainvoke.return_value = [
+        ("values", {"messages": [AIMessage(content="It reports 88.5.")]})
+    ]
+    app.dependency_overrides[get_paper_store] = EvidenceStore
+    try:
+        response = test_client.post(
+            "/invoke",
+            json={
+                "message": "What result was reported?",
+                "evidence_context": {
+                    "document_id": DOCUMENT_ID,
+                    "block_ids": [EVIDENCE_BLOCK_ID],
+                },
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(get_paper_store, None)
+
+    assert response.status_code == 200
+    input_message = mock_agent.ainvoke.await_args.kwargs["input"]["messages"][0]
+    assert input_message.content == "What result was reported?"
+    assert input_message.additional_kwargs["evidence_context"] == {
+        "document_id": DOCUMENT_ID,
+        "source_mode": "selected",
+        "blocks": [
+            {
+                "block_id": EVIDENCE_BLOCK_ID,
+                "pages": [3],
+                "text": "The reported result is 88.5.",
+            }
+        ],
+    }
+
+
+def test_invoke_rejects_invalid_or_missing_selected_evidence(
+    test_client, mock_agent
+) -> None:
+    class EmptyEvidenceStore:
+        def get(self, _document_id: str):
+            return object()
+
+        def get_block(self, _document_id: str, _block_id: str):
+            return None
+
+    app.dependency_overrides[get_paper_store] = EmptyEvidenceStore
+    try:
+        duplicate = test_client.post(
+            "/invoke",
+            json={
+                "message": "Question",
+                "evidence_context": {
+                    "document_id": DOCUMENT_ID,
+                    "block_ids": [EVIDENCE_BLOCK_ID, EVIDENCE_BLOCK_ID],
+                },
+            },
+        )
+        missing = test_client.post(
+            "/invoke",
+            json={
+                "message": "Question",
+                "evidence_context": {
+                    "document_id": DOCUMENT_ID,
+                    "block_ids": [EVIDENCE_BLOCK_ID],
+                },
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(get_paper_store, None)
+
+    assert duplicate.status_code == 422
+    assert missing.status_code == 404
+    mock_agent.ainvoke.assert_not_awaited()
 
 
 def test_invoke_custom_agent(test_client, mock_agent) -> None:

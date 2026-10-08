@@ -1,3 +1,4 @@
+import hashlib
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -5,7 +6,35 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 from langgraph.types import StateSnapshot
 
+from evidencegraph.access import PaperAccessStore
+from evidencegraph.conversations import ConversationStore
 from service import app
+from service.conversations import get_conversation_store
+from service.papers import get_guest_identity, get_paper_access_store
+
+
+@pytest.fixture(autouse=True)
+def isolated_conversation_store(tmp_path):
+    """Keep chat API tests from writing workspace metadata into the developer's data."""
+    store = ConversationStore(tmp_path / "conversations")
+    app.dependency_overrides[get_conversation_store] = lambda: store
+    yield store
+    app.dependency_overrides.pop(get_conversation_store, None)
+
+
+@pytest.fixture(autouse=True)
+def isolated_test_paper_access(tmp_path):
+    """Give legacy service fixtures explicit ownership of their fake papers."""
+    access = PaperAccessStore(tmp_path / "access")
+    test_guest = "test-service-guest"
+    access.grant(test_guest, "a" * 64)
+    private_pdf = b"%PDF-1.4\nprivate deletion fixture"
+    access.grant(test_guest, hashlib.sha256(private_pdf).hexdigest())
+    app.dependency_overrides[get_paper_access_store] = lambda: access
+    app.dependency_overrides[get_guest_identity] = lambda: test_guest
+    yield access
+    app.dependency_overrides.pop(get_guest_identity, None)
+    app.dependency_overrides.pop(get_paper_access_store, None)
 
 
 @pytest.fixture

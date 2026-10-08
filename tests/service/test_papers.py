@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
+from core import settings
+from evidencegraph.access import GUEST_COOKIE, PaperAccessStore
+from evidencegraph.conversations import ConversationStore
 from evidencegraph.ingestion import (
     BoundingBox,
     ParsedBlock,
@@ -15,8 +19,15 @@ from evidencegraph.ingestion import (
     SourceLocation,
 )
 from evidencegraph.paper_worker import PaperWorker
-from evidencegraph.papers import MAX_SAMPLE_BYTES, PaperState, PaperStore
-from service.papers import get_paper_store, graph_extraction_is_configured
+from evidencegraph.papers import PaperState, PaperStore
+from schema import ConversationUpdate
+from service.papers import (
+    get_graph_model_catalog,
+    get_guest_identity,
+    get_paper_access_store,
+    get_paper_store,
+    graph_extraction_is_configured,
+)
 from service.service import app
 
 PDF = b"%PDF-1.4\ninternal test fixture"
@@ -89,7 +100,14 @@ def parsed_document(path: Path) -> ParsedDocument:
 @pytest.fixture
 def client(tmp_path: Path):
     store = PaperStore(tmp_path, allowed_hashes=frozenset({PDF_ID}), parser=parsed_document)
+    access = PaperAccessStore(tmp_path)
     app.dependency_overrides[get_paper_store] = lambda: store
+    app.dependency_overrides[get_paper_access_store] = lambda: access
+    app.dependency_overrides.pop(get_guest_identity, None)
+    app.dependency_overrides[get_graph_model_catalog] = lambda: (
+        "test-graph-model",
+        "other-graph-model",
+    )
     try:
         yield TestClient(app), store
     finally:
@@ -105,12 +123,17 @@ def test_upload_persists_source_status_and_evidence(client):
         "state": "processing",
         "page_count": None,
         "block_count": None,
+        "stage": "queued",
+        "progress_percent": 5,
         "error": None,
     }
     assert store.source_path(PDF_ID).read_bytes() == PDF
     store.process(PDF_ID)
-    assert http.get(f"/papers/{PDF_ID}").json()["state"] == "ready"
-    assert http.get(f"/papers/{PDF_ID}").json()["block_count"] == 1
+    ready = http.get(f"/papers/{PDF_ID}").json()
+    assert ready["state"] == "ready"
+    assert ready["block_count"] == 1
+    assert ready["stage"] == "complete"
+    assert ready["progress_percent"] == 100
     block = http.get(f"/papers/{PDF_ID}/blocks/{BLOCK_ID}")
     assert block.status_code == 200
     assert block.json()["locations"][0]["page_number"] == 1
@@ -160,8 +183,8 @@ def test_list_blocks_is_bounded_and_source_located(client):
 
 
 def test_list_blocks_requires_ready_document(client):
-    http, store = client
-    store.accept(PDF)
+    http, _store = client
+    http.post("/papers", content=PDF, headers={"Content-Type": "application/pdf"})
     assert http.get(f"/papers/{PDF_ID}/blocks").status_code == 409
     assert http.get(f"/papers/{'f' * 64}/blocks").status_code == 404
     assert http.get("/papers/not-a-hash/blocks").status_code == 422
@@ -172,7 +195,43 @@ def test_list_blocks_requires_ready_document(client):
 )
 def test_list_blocks_validates_pagination(client, query, expected):
     http, _store = client
+    http.post("/papers", content=PDF, headers={"Content-Type": "application/pdf"})
     assert http.get(f"/papers/{PDF_ID}/blocks?{query}").status_code == expected
+
+
+def test_guest_paper_access_requires_own_upload(client):
+    owner, _store = client
+    uploaded = owner.post("/papers", content=PDF, headers={"Content-Type": "application/pdf"})
+    assert uploaded.status_code == 202
+    assert GUEST_COOKIE in owner.cookies
+    cookie = uploaded.headers["set-cookie"].lower()
+    assert "httponly" in cookie and "samesite=lax" in cookie
+
+    with TestClient(app) as stranger:
+        assert stranger.get(f"/papers/{PDF_ID}").status_code == 404
+        assert stranger.get(f"/papers/{PDF_ID}/source").status_code == 404
+        assert stranger.get(f"/papers/{PDF_ID}/graph").status_code == 404
+        assert stranger.post(f"/papers/{PDF_ID}/graph").status_code == 404
+        claimed = stranger.post(
+            "/papers", content=PDF, headers={"Content-Type": "application/pdf"}
+        )
+        assert claimed.status_code == 202
+        assert stranger.get(f"/papers/{PDF_ID}").status_code == 200
+    assert owner.get(f"/papers/{PDF_ID}").status_code == 200
+
+
+def test_published_tutorial_is_readable_but_not_mutable(client):
+    owner, store = client
+    owner.post("/papers", content=PDF, headers={"Content-Type": "application/pdf"})
+    conversations = ConversationStore(store.root)
+    conversations.save("tutorial", ConversationUpdate(user_id="author", document_id=PDF_ID))
+    conversations.publish_showcase("tutorial", "author", "Tutorial", "Example", "test")
+
+    with TestClient(app) as visitor:
+        assert visitor.get(f"/papers/{PDF_ID}").status_code == 200
+        assert visitor.get(f"/papers/{PDF_ID}/source").status_code == 200
+        assert visitor.post(f"/papers/{PDF_ID}/graph").status_code == 404
+    assert owner.post(f"/papers/{PDF_ID}/graph").status_code == 403
 
 
 def test_duplicate_upload_is_idempotent(client):
@@ -218,13 +277,73 @@ def test_processing_records_survive_api_restart(tmp_path: Path):
         (b"", "application/pdf", 422),
         (b"not a PDF", "application/pdf", 422),
         (b"%PDF-1.4\na different version", "application/pdf", 422),
-        (b"%PDF-" + b"x" * MAX_SAMPLE_BYTES, "application/pdf", 413),
     ],
 )
 def test_upload_rejects_unapproved_inputs(client, content, content_type, expected):
     http, _store = client
     response = http.post("/papers", content=content, headers={"Content-Type": content_type})
     assert response.status_code == expected
+
+
+def test_upload_rejects_body_over_configured_limit(client, monkeypatch):
+    http, _store = client
+    monkeypatch.setattr(settings, "EVIDENCEGRAPH_MAX_PDF_BYTES", len(PDF) - 1)
+    response = http.post("/papers", content=PDF, headers={"Content-Type": "application/pdf"})
+    assert response.status_code == 413
+    assert response.json()["detail"] == f"PDF exceeds the upload limit of {len(PDF) - 1} bytes"
+
+
+def test_default_store_accepts_a_valid_unlisted_pdf(tmp_path: Path):
+    content = b"%PDF-1.4\na paper outside the phase 0 fixtures"
+    store = PaperStore(tmp_path)
+    record, needed = store.accept(content)
+    assert needed
+    assert record.document_id == hashlib.sha256(content).hexdigest()
+    assert store.source_path(record.document_id).read_bytes() == content
+
+
+def test_configuration_reports_upload_limit_and_graph_models(client):
+    http, _store = client
+    response = http.get("/papers/configuration")
+    assert response.status_code == 200
+    assert response.json() == {
+        "max_pdf_bytes": 25 * 1024 * 1024,
+        "graph_models": ["test-graph-model", "other-graph-model"],
+        "default_graph_model": "test-graph-model",
+    }
+
+
+def test_default_model_catalog_only_lists_providers_with_credentials(monkeypatch):
+    monkeypatch.setattr(settings, "GROQ_API_KEY", SecretStr("test-groq-key"))
+    monkeypatch.setattr(settings, "GOOGLE_API_KEY", None)
+    monkeypatch.setattr(settings, "OLLAMA_BASE_URL", None)
+    monkeypatch.setattr(settings, "EVIDENCEGRAPH_GRAPH_MODEL", None)
+    monkeypatch.setattr(settings, "EVIDENCEGRAPH_GRAPH_MODELS", None)
+
+    assert get_graph_model_catalog() == (
+        "groq/openai/gpt-oss-120b",
+        "groq/openai/gpt-oss-20b",
+    )
+
+
+def test_model_catalog_lists_local_ollama_without_api_key(monkeypatch):
+    monkeypatch.setattr(settings, "GROQ_API_KEY", None)
+    monkeypatch.setattr(settings, "GOOGLE_API_KEY", None)
+    monkeypatch.setattr(settings, "OLLAMA_BASE_URL", "http://localhost:11434")
+    monkeypatch.setattr(settings, "EVIDENCEGRAPH_GRAPH_MODEL", None)
+    monkeypatch.setattr(settings, "EVIDENCEGRAPH_GRAPH_MODELS", None)
+
+    assert get_graph_model_catalog() == ("ollama/gpt-oss:20b",)
+
+
+def test_local_model_is_hidden_without_ollama_url(monkeypatch):
+    monkeypatch.setattr(settings, "GROQ_API_KEY", None)
+    monkeypatch.setattr(settings, "GOOGLE_API_KEY", None)
+    monkeypatch.setattr(settings, "OLLAMA_BASE_URL", None)
+    monkeypatch.setattr(settings, "EVIDENCEGRAPH_GRAPH_MODEL", "ollama/qwen3:14b-q4_K_M")
+    monkeypatch.setattr(settings, "EVIDENCEGRAPH_GRAPH_MODELS", None)
+
+    assert get_graph_model_catalog() == ()
 
 
 def test_document_id_cannot_escape_store(client):
@@ -250,11 +369,15 @@ def test_graph_request_status_and_artifact_flow(client):
     http.post("/papers", content=PDF, headers={"Content-Type": "application/pdf"})
     store.process(PDF_ID)
 
-    requested = http.post(f"/papers/{PDF_ID}/graph")
+    requested = http.post(
+        f"/papers/{PDF_ID}/graph", json={"model": "other-graph-model"}
+    )
     duplicate = http.post(f"/papers/{PDF_ID}/graph")
 
     assert requested.status_code == duplicate.status_code == 202
     assert requested.json()["state"] == duplicate.json()["state"] == "queued"
+    assert requested.json()["requested_model"] == "other-graph-model"
+    assert duplicate.json()["requested_model"] == "other-graph-model"
     assert http.get(f"/papers/{PDF_ID}/graph/status").json()["state"] == "queued"
     assert http.get(f"/papers/{PDF_ID}/graph").status_code == 409
 
@@ -266,6 +389,7 @@ def test_graph_request_status_and_artifact_flow(client):
     assert ready.status_code == artifact.status_code == 200
     assert ready.json()["state"] == "ready"
     assert ready.json()["node_count"] == 2
+    assert ready.json()["requested_model"] == "other-graph-model"
     assert ready.json()["current_version"] == 1
     assert artifact.json()["extractor_name"] == "fake-api-extractor"
     assert artifact.json()["graph_version"] == 1
@@ -275,6 +399,19 @@ def test_graph_request_status_and_artifact_flow(client):
     assert versions.status_code == 200
     assert versions.json()["current_version"] == 1
     assert [item["version"] for item in versions.json()["versions"]] == [1]
+
+
+def test_graph_request_rejects_model_outside_allowlist(client):
+    http, store = client
+    app.dependency_overrides[graph_extraction_is_configured] = lambda: True
+    http.post("/papers", content=PDF, headers={"Content-Type": "application/pdf"})
+    store.process(PDF_ID)
+
+    response = http.post(f"/papers/{PDF_ID}/graph", json={"model": "unknown-model"})
+
+    assert response.status_code == 422
+    assert "configured allowlist" in response.json()["detail"]
+    assert store.get_graph_record(PDF_ID) is None
 
 
 def test_graph_request_requires_ready_paper(client):

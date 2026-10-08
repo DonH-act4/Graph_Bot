@@ -103,6 +103,8 @@ async def agui_run(
     Use the same threadId across runs to continue a conversation - threads are
     persisted in the service's checkpointer and shared with the vanilla API.
     """
+    if settings.EVIDENCEGRAPH_ENFORCE_SESSION_IDENTITY or settings.EVIDENCEGRAPH_REQUIRE_LOGIN_FOR_CHAT:
+        raise HTTPException(status_code=403, detail="AG-UI is unavailable in strict session mode")
     try:
         graph: AgentGraph = get_agent(agent_id)
     except KeyError:

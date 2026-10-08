@@ -146,6 +146,15 @@ def test_agui_unknown_agent(mock_agui_agent, test_client) -> None:
     assert response.status_code == 404
 
 
+def test_agui_is_closed_when_session_identity_is_enforced(
+    mock_agui_agent, test_client, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "EVIDENCEGRAPH_ENFORCE_SESSION_IDENTITY", True)
+    response = test_client.post("/agui/model-agent/run", json=run_input())
+    assert response.status_code == 403
+    assert captured_configurable == {}
+
+
 def test_agui_configurable_passthrough(mock_agui_agent, allow_fake_model, test_client) -> None:
     """forwardedProps.configurable values reach the agent's configurable."""
     body = run_input(

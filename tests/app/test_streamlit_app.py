@@ -14,18 +14,14 @@ from client import (
     GraphEvidenceRef,
     GraphNode,
     GraphRelation,
-    GraphReviews,
     GraphStatus,
-    GraphVersions,
     PaperStatus,
 )
 from schema import ChatHistory, ChatMessage, ThreadSummary, UserThreads
 from schema.models import OpenAIModelName
 from streamlit_app import (
-    build_graph_edge_styles,
     build_graph_elements,
-    build_graph_layout,
-    build_graph_node_styles,
+    compact_graph_label,
     resolve_graph_selection,
 )
 
@@ -55,7 +51,7 @@ def test_app_simple_non_streaming(mock_agent_client):
     assert not at.exception
 
 
-def test_ready_paper_shows_candidate_graph_controls(mock_agent_client):
+def test_ready_paper_automatically_requests_graph(mock_agent_client):
     mock_agent_client.get_paper.return_value = PaperStatus(
         document_id="a" * 64, state="ready", page_count=15, block_count=154
     )
@@ -87,14 +83,50 @@ def test_ready_paper_shows_candidate_graph_controls(mock_agent_client):
             ),
         ),
     )
+    mock_agent_client.get_paper_graph_status.return_value = GraphStatus(
+        document_id="a" * 64,
+        state="processing",
+        current_version=None,
+    )
     at = AppTest.from_file("../../src/streamlit_app.py")
     at.session_state.paper_id = "a" * 64
     at.run()
     assert mock_agent_client.get_paper.called
-    assert any("15 pages, 154 evidence blocks" in item.value for item in at.success)
-    assert any("remain candidates" in item.value for item in at.get("caption"))
-    assert any("A source-located fact" in item.value for item in at.get("markdown"))
-    assert any("Page 3" in item.value for item in at.get("caption"))
+    mock_agent_client.request_paper_graph.assert_called_once_with("a" * 64)
+    assert at.session_state.paper_graph_requested is True
+    assert any("Building the evidence graph" in item.value for item in at.info)
+    assert "New Chat" in at.sidebar.button(key="paper_new_chat").label
+    assert any("Previous Chats" in expander.label for expander in at.sidebar.expander)
+    assert not at.get("popover")
+    assert not any("Share" in button.label for button in at.sidebar.button)
+    assert not at.chat_message
+    assert not at.exception
+
+
+def test_paper_new_chat_clears_document_context(mock_agent_client):
+    document_id = "a" * 64
+    mock_agent_client.get_paper.return_value = PaperStatus(
+        document_id=document_id, state="processing"
+    )
+    at = AppTest.from_file("../../src/streamlit_app.py")
+    at.session_state.paper_id = document_id
+    at.session_state.paper_graph_requested = True
+    at.session_state.paper_graph_version = 2
+    at.session_state.paper_graph_selection = {"selected": "edge:test"}
+
+    at.run()
+    assert at.query_params["document_id"] == [document_id]
+
+    at.sidebar.button(key="paper_new_chat").click().run()
+
+    assert "document_id" not in at.query_params
+    assert "paper_id" not in at.session_state
+    assert "paper_graph_requested" not in at.session_state
+    assert "paper_graph_version" not in at.session_state
+    assert "paper_graph_selection" not in at.session_state
+    assert at.session_state.messages == []
+    assert at.session_state.thread_id
+    assert at.chat_message
     assert not at.exception
 
 
@@ -122,8 +154,8 @@ def test_document_url_restores_existing_paper_and_reads_graph_status(mock_agent_
     mock_agent_client.get_paper_graph_status.assert_called_with(document_id)
     mock_agent_client.request_paper_graph.assert_not_called()
     mock_agent_client.rebuild_paper_graph.assert_not_called()
-    assert any("13 pages, 204 evidence blocks" in item.value for item in at.success)
-    assert any("Graph extraction is processing" in item.value for item in at.info)
+    assert any("Building the evidence graph" in item.value for item in at.info)
+    assert not at.chat_message
     assert not at.exception
 
 
@@ -161,7 +193,7 @@ def test_upload_writes_document_id_to_url(mock_agent_client):
     assert not at.exception
 
 
-def test_ready_candidate_graph_is_auditable(mock_agent_client):
+def test_ready_graph_shows_source_without_review_controls(mock_agent_client):
     document_id = "a" * 64
     evidence = GraphEvidenceRef(source_sha256=document_id, block_id="blk_test")
     mock_agent_client.get_paper.return_value = PaperStatus(
@@ -222,22 +254,6 @@ def test_ready_candidate_graph_is_auditable(mock_agent_client):
             ),
         },
     )
-    mock_agent_client.get_paper_graph_reviews.return_value = GraphReviews(
-        schema_version="1", document_sha256=document_id, reviews=()
-    )
-    mock_agent_client.get_paper_graph_versions.return_value = GraphVersions(
-        document_id=document_id,
-        current_version=1,
-        versions=(
-            {
-                "version": 1,
-                "extractor_name": "google-gemini",
-                "extractor_version": "test-model",
-                "node_count": 2,
-                "relation_count": 1,
-            },
-        ),
-    )
     mock_agent_client.get_paper_blocks.return_value = EvidenceBlockPage(
         document_id=document_id, total=0, offset=0, limit=10, items=()
     )
@@ -247,16 +263,10 @@ def test_ready_candidate_graph_is_auditable(mock_agent_client):
 
     at.run()
 
-    assert any("2 nodes, 1 relationships" in item.value for item in at.success)
-    assert any(item.label == "Nodes" and item.value == "2" for item in at.metric)
-    assert any(item.label == "Relationships" and item.value == "1" for item in at.metric)
-    assert any(item.label == "Reviewed" and item.value == "0/1" for item in at.metric)
+    assert not at.metric
     assert any("test-model" in item.value for item in at.get("caption"))
-    assert any("Current graph: v1" in item.value for item in at.get("caption"))
-    assert any("20,000 input" in item.value for item in at.get("caption"))
-    assert any("$0.009750 USD" in item.value for item in at.get("caption"))
-    assert any("test pricing snapshot" in item.value for item in at.get("caption"))
-    assert not any("Complete graph audit list" in item.label for item in at.expander)
+    mock_agent_client.get_paper_graph_reviews.assert_not_called()
+    assert not at.chat_message
     assert not at.exception
 
     mock_agent_client.get_paper_block.return_value = EvidenceBlock(
@@ -285,19 +295,22 @@ def test_ready_candidate_graph_is_auditable(mock_agent_client):
         "event": {"data": {"target_id": "edge:introduces", "target_group": "edges"}},
     }
     at.run()
-    mock_agent_client.get_paper_graph.assert_called_with(document_id, version=1)
-    mock_agent_client.get_paper_graph_reviews.assert_called_with(document_id, version=1)
+    mock_agent_client.get_paper_graph.assert_called_with(document_id)
+    mock_agent_client.get_paper_graph_versions.assert_not_called()
+    mock_agent_client.get_paper_graph_reviews.assert_not_called()
     mock_agent_client.get_paper_block.assert_called_with(document_id, "blk_test")
-    assert any("Selected relationship evidence" in item.value for item in at.get("markdown"))
-    assert any("blk_test · pages 3" in item.value for item in at.get("caption"))
-    at.button(key="accept_introduces").click().run()
-    mock_agent_client.review_paper_graph_relation.assert_called_with(
-        document_id, "introduces", "accepted"
+    html_values = [str(item.proto) for item in at.get("html")]
+    assert any("Selected relationship evidence" in value for value in html_values)
+    assert any("Page 3" in value for value in html_values)
+    assert not any(
+        button.label in {"Accept relationship", "Reject relationship"}
+        for button in at.button
     )
+    mock_agent_client.review_paper_graph_relation.assert_not_called()
     assert not at.exception
 
 
-def test_graph_elements_encode_types_review_status_and_safe_ids():
+def test_graph_elements_encode_types_and_safe_ids_without_review_state():
     document_id = "a" * 64
     evidence = GraphEvidenceRef(source_sha256=document_id, block_id="blk_test")
     artifact = GraphArtifact(
@@ -341,42 +354,19 @@ def test_graph_elements_encode_types_review_status_and_safe_ids():
 
     assert elements["nodes"][0]["data"]["id"] == 'node:paper"; rankdir="TB'
     assert elements["nodes"][0]["data"]["label"] == "PAPER"
+    assert elements["nodes"][0]["data"]["display_name"] == 'Paper"; rankdir="TB'
     assert elements["nodes"][1]["data"]["label"] == "DATASET"
     assert elements["edges"][0]["data"]["id"] == "edge:uses"
-    assert elements["edges"][0]["data"]["label"] == "RELATION_CANDIDATE"
+    assert elements["edges"][0]["data"]["label"] == "RELATION"
     assert elements["edges"][0]["data"]["source"] == 'node:paper"; rankdir="TB'
-
-    reviews = GraphReviews(
-        schema_version="1",
-        document_sha256=document_id,
-        reviews=(
-            {
-                "relation_id": "uses",
-                "decision": "accepted",
-                "reviewed_at": "2026-09-27T10:00:00Z",
-            },
-        ),
+    assert "review_status" not in elements["edges"][0]["data"]
+    assert "rationale" not in elements["edges"][0]["data"]
+    assert compact_graph_label(
+        "RoBERTa: A Robustly Optimized BERT Pretraining Approach", "paper"
+    ) == "RoBERTa paper"
+    assert compact_graph_label("BOOKCORPUS plus English WIKIPEDIA", "dataset") == (
+        "BOOKCORPUS + WIKIPEDIA"
     )
-    reviewed_elements = build_graph_elements(artifact, reviews)
-    assert reviewed_elements["edges"][0]["data"]["label"] == "RELATION_ACCEPTED"
-    assert reviewed_elements["edges"][0]["data"]["review_status"] == "accepted"
-
-    node_styles = {style.label: style.dump() for style in build_graph_node_styles()}
-    assert node_styles["PAPER"]["style"]["shape"] == "ellipse"
-    assert node_styles["DATASET"]["style"]["background-color"] == "#22c55e"
-    edge_styles = {style.label: style.dump() for style in build_graph_edge_styles()}
-    assert edge_styles["RELATION_CANDIDATE"]["style"]["line-style"] == "dashed"
-    assert edge_styles["RELATION_CANDIDATE"]["style"]["width"] == 3
-    assert edge_styles["RELATION_ACCEPTED"]["style"]["line-color"] == "#16a34a"
-    assert build_graph_layout() == {
-        "name": "concentric",
-        "animate": False,
-        "fit": True,
-        "padding": 48,
-        "avoidOverlap": True,
-        "minNodeSpacing": 20,
-        "spacingFactor": 0.9,
-    }
 
     assert resolve_graph_selection(
         artifact,

@@ -43,9 +43,14 @@ def langchain_to_chat_message(message: BaseMessage) -> ChatMessage:
     """Create a ChatMessage from a LangChain message."""
     match message:
         case HumanMessage():
+            custom_data: dict[str, Any] = {}
+            evidence_context = message.additional_kwargs.get("evidence_context")
+            if isinstance(evidence_context, Mapping):
+                custom_data["evidence_context"] = dict(evidence_context)
             human_message = ChatMessage(
                 type="human",
                 content=convert_message_content_to_string(message.content),
+                custom_data=custom_data,
             )
             return human_message
         case AIMessage():

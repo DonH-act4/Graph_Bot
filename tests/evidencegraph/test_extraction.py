@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import pytest
@@ -107,12 +108,156 @@ def graph_json(
     """
 
 
+def v2_graph_json(*, valid_relations: int = 3, invalid_relations: int = 1) -> str:
+    nodes = [
+        {
+            "node_id": "paper",
+            "node_type": "paper",
+            "name": "Example paper",
+            "document_sha256": PDF_HASH,
+            "evidence": [{"source_sha256": PDF_HASH, "block_id": BLOCK_ID}],
+        },
+        {
+            "node_id": "claim",
+            "node_type": "claim",
+            "name": "Main conclusion",
+            "document_sha256": PDF_HASH,
+            "evidence": [{"source_sha256": PDF_HASH, "block_id": BLOCK_ID}],
+        },
+        {
+            "node_id": "actor",
+            "node_type": "actor",
+            "name": "Study population",
+            "document_sha256": PDF_HASH,
+            "evidence": [{"source_sha256": PDF_HASH, "block_id": BLOCK_ID}],
+        },
+    ]
+    relations = [
+        {
+            "relation_id": f"reports-{index}",
+            "source_node_id": "paper",
+            "target_node_id": "claim",
+            "relation_type": "reports",
+            "status": "candidate",
+            "evidence": [{"source_sha256": PDF_HASH, "block_id": BLOCK_ID}],
+            "rationale": "The cited block states the conclusion.",
+        }
+        for index in range(valid_relations)
+    ]
+    relations.extend(
+        {
+            "relation_id": f"invalid-introduces-{index}",
+            "source_node_id": "paper",
+            "target_node_id": "actor",
+            "relation_type": "introduces",
+            "status": "candidate",
+            "evidence": [{"source_sha256": PDF_HASH, "block_id": BLOCK_ID}],
+            "rationale": "The cited block names the population.",
+        }
+        for index in range(invalid_relations)
+    )
+    return json.dumps({"schema_version": "2", "nodes": nodes, "relations": relations})
+
+
+def v3_uses_graph_json(*, uses_relations: int = 1) -> str:
+    nodes = [
+        {
+            "node_id": "paper",
+            "node_type": "paper",
+            "name": "Example paper",
+            "document_sha256": PDF_HASH,
+            "evidence": [{"source_sha256": PDF_HASH, "block_id": BLOCK_ID}],
+        },
+        {
+            "node_id": "claim",
+            "node_type": "claim",
+            "name": "Main conclusion",
+            "document_sha256": PDF_HASH,
+            "evidence": [{"source_sha256": PDF_HASH, "block_id": BLOCK_ID}],
+        },
+        {
+            "node_id": "process",
+            "node_type": "process",
+            "name": "Study workflow",
+            "document_sha256": PDF_HASH,
+            "evidence": [{"source_sha256": PDF_HASH, "block_id": BLOCK_ID}],
+        },
+        {
+            "node_id": "artifact",
+            "node_type": "artifact",
+            "name": "Tool X",
+            "document_sha256": PDF_HASH,
+            "evidence": [{"source_sha256": PDF_HASH, "block_id": BLOCK_ID}],
+        },
+    ]
+    relations = [
+        {
+            "relation_id": "reports-claim",
+            "source_node_id": "paper",
+            "target_node_id": "claim",
+            "relation_type": "reports",
+            "status": "candidate",
+            "evidence": [{"source_sha256": PDF_HASH, "block_id": BLOCK_ID}],
+            "rationale": "The paper states the conclusion.",
+        },
+        {
+            "relation_id": "studies-process",
+            "source_node_id": "paper",
+            "target_node_id": "process",
+            "relation_type": "studies",
+            "status": "candidate",
+            "evidence": [{"source_sha256": PDF_HASH, "block_id": BLOCK_ID}],
+            "rationale": "The paper studies the workflow.",
+        },
+    ]
+    relations.extend(
+        {
+            "relation_id": f"uses-tool-{index}",
+            "source_node_id": "process",
+            "target_node_id": "artifact",
+            "relation_type": "uses",
+            "status": "candidate",
+            "evidence": [{"source_sha256": PDF_HASH, "block_id": BLOCK_ID}],
+            "rationale": "The workflow uses the tool.",
+        }
+        for index in range(uses_relations)
+    )
+    return json.dumps({"schema_version": "3", "nodes": nodes, "relations": relations})
+
+
+@dataclass
+class RepairingExtractor:
+    initial: str
+    repaired: str
+    name: str = "repairing-test-extractor"
+    version: str = "1"
+    repair_calls: int = 0
+
+    def extract(self, _document: ParsedDocument) -> str:
+        return self.initial
+
+    def repair(
+        self,
+        _document: ParsedDocument,
+        _raw_graph_json: str,
+        _validation_error: str,
+    ) -> str:
+        self.repair_calls += 1
+        return self.repaired
+
+
 def test_accepts_evidence_linked_candidate(document: ParsedDocument) -> None:
-    artifact = extract_graph(document, FakeExtractor(output=graph_json()))
+    progress: list[tuple[str, int]] = []
+    artifact = extract_graph(
+        document,
+        FakeExtractor(output=graph_json()),
+        progress_callback=lambda stage, percent: progress.append((stage, percent)),
+    )
 
     assert artifact.document_sha256 == PDF_HASH
     assert artifact.extractor_name == "deterministic-test-extractor"
     assert artifact.graph.relations[0].status == "candidate"
+    assert progress == [("ontology_validation", 60), ("saving_graph", 95)]
 
 
 def test_preserves_provider_usage_in_artifact(document: ParsedDocument) -> None:
@@ -141,6 +286,165 @@ def test_preserves_provider_usage_in_artifact(document: ParsedDocument) -> None:
     assert artifact.usage is not None
     assert artifact.usage.total_tokens == 125
     assert artifact.usage.pricing_basis == "test pricing"
+
+
+def test_repairs_one_invalid_endpoint_relation_once(document: ParsedDocument) -> None:
+    extractor = RepairingExtractor(
+        initial=v2_graph_json(valid_relations=3, invalid_relations=1),
+        repaired=v2_graph_json(valid_relations=3, invalid_relations=0),
+    )
+
+    progress: list[tuple[str, int]] = []
+    artifact = extract_graph(
+        document,
+        extractor,
+        progress_callback=lambda stage, percent: progress.append((stage, percent)),
+    )
+
+    assert extractor.repair_calls == 1
+    assert len(artifact.graph.relations) == 3
+    assert artifact.warnings[0].code == "model_output_repaired"
+    assert progress == [
+        ("ontology_validation", 60),
+        ("ontology_repair", 75),
+        ("saving_graph", 95),
+    ]
+
+
+def test_salvages_a_partially_repaired_graph_instead_of_reverting_to_original(
+    document: ParsedDocument,
+) -> None:
+    extractor = RepairingExtractor(
+        initial=v2_graph_json(valid_relations=1, invalid_relations=3),
+        repaired=v2_graph_json(valid_relations=5, invalid_relations=1),
+    )
+
+    artifact = extract_graph(document, extractor)
+
+    assert extractor.repair_calls == 1
+    assert len(artifact.graph.relations) == 5
+    assert artifact.warnings[0].code == "invalid_relations_omitted"
+    assert artifact.warnings[0].relation_ids == ("invalid-introduces-0",)
+
+
+def test_omits_one_unrepairable_relation_from_mostly_valid_graph(
+    document: ParsedDocument,
+) -> None:
+    artifact = extract_graph(
+        document,
+        FakeExtractor(output=v2_graph_json(valid_relations=3, invalid_relations=1)),
+    )
+
+    assert len(artifact.graph.relations) == 3
+    assert artifact.warnings[0].code == "invalid_relations_omitted"
+    assert artifact.warnings[0].relation_ids == ("invalid-introduces-0",)
+
+
+def test_omits_uses_relation_when_evidence_only_mentions_entities(
+    document: ParsedDocument,
+) -> None:
+    artifact = extract_graph(
+        document,
+        FakeExtractor(output=v3_uses_graph_json()),
+    )
+
+    assert [relation.relation_id for relation in artifact.graph.relations] == [
+        "reports-claim",
+        "studies-process",
+    ]
+    assert artifact.warnings[0].code == "unsupported_relations_omitted"
+    assert artifact.warnings[0].relation_ids == ("uses-tool-0",)
+
+
+@pytest.mark.parametrize(
+    "evidence_text",
+    [
+        "The experiment used Tool X to measure the samples.",
+        "研究采用 Tool X 测量样本。",
+    ],
+)
+def test_keeps_uses_relation_when_evidence_explicitly_states_use(
+    document: ParsedDocument,
+    evidence_text: str,
+) -> None:
+    supported_document = document.model_copy(
+        update={
+            "blocks": (
+                document.blocks[0].model_copy(update={"text": evidence_text}),
+            )
+        }
+    )
+
+    artifact = extract_graph(
+        supported_document,
+        FakeExtractor(output=v3_uses_graph_json()),
+    )
+
+    assert len(artifact.graph.relations) == 3
+    assert artifact.warnings == ()
+
+
+def test_prunes_nodes_disconnected_from_the_paper_component(
+    document: ParsedDocument,
+) -> None:
+    artifact = extract_graph(
+        document,
+        FakeExtractor(output=v2_graph_json(valid_relations=1, invalid_relations=0)),
+    )
+
+    assert {node.node_id for node in artifact.graph.nodes} == {"paper", "claim"}
+    assert artifact.warnings[0].code == "disconnected_nodes_omitted"
+    assert "1 node(s)" in artifact.warnings[0].message
+
+
+def test_prunes_edges_inside_a_disconnected_component(document: ParsedDocument) -> None:
+    payload = json.loads(v2_graph_json(valid_relations=1, invalid_relations=0))
+    claim = next(node for node in payload["nodes"] if node["node_id"] == "claim")
+    payload["nodes"].extend([
+        {**claim, "node_id": "isolated_a", "name": "Isolated finding A"},
+        {**claim, "node_id": "isolated_b", "name": "Isolated finding B"},
+    ])
+    payload["relations"].append({
+        **payload["relations"][0],
+        "relation_id": "isolated_relation",
+        "source_node_id": "isolated_a",
+        "target_node_id": "isolated_b",
+        "relation_type": "contradicts",
+    })
+
+    artifact = extract_graph(document, FakeExtractor(output=json.dumps(payload)))
+
+    assert {node.node_id for node in artifact.graph.nodes} == {"paper", "claim"}
+    assert len(artifact.graph.relations) == 1
+    assert artifact.warnings[0].code == "disconnected_nodes_omitted"
+    # A serialized artifact must also survive the final persistence boundary.
+    assert GraphArtifact.model_validate_json(artifact.model_dump_json()) == artifact
+
+
+def test_rejects_graph_with_too_many_uses_relations_without_usage_evidence(
+    document: ParsedDocument,
+) -> None:
+    with pytest.raises(
+        GraphExtractionError,
+        match=r"too many uses relations without explicit usage evidence \(4 unsupported\)",
+    ):
+        extract_graph(
+            document,
+            FakeExtractor(output=v3_uses_graph_json(uses_relations=4)),
+        )
+
+
+def test_rejects_graph_when_invalid_relations_are_not_a_small_minority(
+    document: ParsedDocument,
+) -> None:
+    with pytest.raises(
+        GraphExtractionError,
+        match=r"too many invalid ontology relations.*1/2 invalid.*introduces:paper->actor x1",
+    ):
+        extract_graph(
+            document,
+            FakeExtractor(output=v2_graph_json(valid_relations=1, invalid_relations=1)),
+        )
 
 
 @pytest.mark.parametrize("output", ["not json", '{"nodes": []}'])

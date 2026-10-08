@@ -185,6 +185,365 @@ def test_node_cannot_claim_evidence_from_another_pdf() -> None:
         )
 
 
+def test_ontology_v2_accepts_cross_domain_core_and_domain_types() -> None:
+    evidence = (_ref(SOURCE_HASH, SOURCE_BLOCK),)
+    annotation = GraphAnnotation(
+        schema_version="2",
+        nodes=(
+            GraphNode(
+                node_id="paper",
+                node_type=NodeType.PAPER,
+                name="Clinical study",
+                document_sha256=SOURCE_HASH,
+                evidence=evidence,
+            ),
+            GraphNode(
+                node_id="intervention",
+                node_type=NodeType.PROCESS,
+                domain_type="medical_intervention",
+                name="Treatment protocol",
+                document_sha256=SOURCE_HASH,
+                evidence=evidence,
+            ),
+            GraphNode(
+                node_id="outcome",
+                node_type=NodeType.OBSERVATION,
+                domain_type="primary_outcome",
+                name="Response rate",
+                value=63.5,
+                unit="percent",
+                uncertainty="95% CI 58.1–68.9",
+                conditions="after 12 weeks",
+                document_sha256=SOURCE_HASH,
+                evidence=evidence,
+            ),
+        ),
+        relations=(
+            GraphRelation(
+                relation_id="paper_reports_outcome",
+                source_node_id="paper",
+                target_node_id="outcome",
+                relation_type=RelationType.REPORTS,
+                domain_relation="reports_primary_outcome",
+                status=RelationStatus.CANDIDATE,
+                evidence=evidence,
+                rationale="The paper reports the primary outcome.",
+            ),
+        ),
+    )
+
+    assert annotation.schema_version == "2"
+    assert annotation.nodes[1].domain_type == "medical_intervention"
+    assert annotation.nodes[2].value == 63.5
+    assert annotation.relations[0].domain_relation == "reports_primary_outcome"
+
+
+def test_ontology_v2_accepts_shared_patterns_across_disciplines() -> None:
+    """One core ontology covers engineering, science, social, and medical papers."""
+    evidence = (_ref(SOURCE_HASH, SOURCE_BLOCK),)
+
+    def node(node_id: str, node_type: NodeType, name: str) -> GraphNode:
+        return GraphNode(
+            node_id=node_id,
+            node_type=node_type,
+            name=name,
+            document_sha256=SOURCE_HASH,
+            evidence=evidence,
+        )
+
+    annotation = GraphAnnotation(
+        schema_version="2",
+        nodes=(
+            node("paper", NodeType.PAPER, "Cross-domain paper"),
+            node("population", NodeType.ACTOR, "Target population"),
+            node("procedure", NodeType.PROCESS, "Research procedure"),
+            node("instrument", NodeType.ARTIFACT, "Measurement instrument"),
+            node("construct", NodeType.CONCEPT, "Measured construct"),
+            node("recommendation", NodeType.CLAIM, "Evidence-backed recommendation"),
+            node("experiment", NodeType.PROCESS, "Validation experiment"),
+        ),
+        relations=(
+            GraphRelation(
+                relation_id="procedure_uses_instrument",
+                source_node_id="procedure",
+                target_node_id="instrument",
+                relation_type=RelationType.USES,
+                status=RelationStatus.CANDIDATE,
+                evidence=evidence,
+                rationale="The research procedure uses the instrument.",
+            ),
+            GraphRelation(
+                relation_id="procedure_applies_to_population",
+                source_node_id="procedure",
+                target_node_id="population",
+                relation_type=RelationType.APPLIES_TO,
+                status=RelationStatus.CANDIDATE,
+                evidence=evidence,
+                rationale="The procedure applies to the target population.",
+            ),
+            GraphRelation(
+                relation_id="recommendation_applies_to_population",
+                source_node_id="recommendation",
+                target_node_id="population",
+                relation_type=RelationType.APPLIES_TO,
+                status=RelationStatus.CANDIDATE,
+                evidence=evidence,
+                rationale="The recommendation applies to the target population.",
+            ),
+            GraphRelation(
+                relation_id="instrument_measures_construct",
+                source_node_id="instrument",
+                target_node_id="construct",
+                relation_type=RelationType.MEASURES,
+                status=RelationStatus.CANDIDATE,
+                evidence=evidence,
+                rationale="The instrument measures the construct.",
+            ),
+            GraphRelation(
+                relation_id="experiment_supports_recommendation",
+                source_node_id="experiment",
+                target_node_id="recommendation",
+                relation_type=RelationType.SUPPORTS,
+                status=RelationStatus.CANDIDATE,
+                evidence=evidence,
+                rationale="The validation experiment supports the recommendation.",
+            ),
+            GraphRelation(
+                relation_id="recommendation_builds_on_construct",
+                source_node_id="recommendation",
+                target_node_id="construct",
+                relation_type=RelationType.BUILDS_ON,
+                status=RelationStatus.CANDIDATE,
+                evidence=evidence,
+                rationale="The recommendation builds on the established construct.",
+            ),
+            GraphRelation(
+                relation_id="paper_reports_recommendation",
+                source_node_id="paper",
+                target_node_id="recommendation",
+                relation_type=RelationType.REPORTS,
+                status=RelationStatus.CANDIDATE,
+                evidence=evidence,
+                rationale="The paper reports the recommendation.",
+            ),
+        ),
+    )
+
+    assert len(annotation.relations) == 7
+
+
+def test_ontology_v3_rejects_paper_uses_but_v2_history_remains_readable() -> None:
+    evidence = (_ref(SOURCE_HASH, SOURCE_BLOCK),)
+    paper = GraphNode(
+        node_id="paper",
+        node_type=NodeType.PAPER,
+        name="Review paper",
+        document_sha256=SOURCE_HASH,
+        evidence=evidence,
+    )
+    instrument = GraphNode(
+        node_id="instrument",
+        node_type=NodeType.ARTIFACT,
+        name="Discussed instrument",
+        document_sha256=SOURCE_HASH,
+        evidence=evidence,
+    )
+    relation = GraphRelation(
+        relation_id="paper_uses_instrument",
+        source_node_id="paper",
+        target_node_id="instrument",
+        relation_type=RelationType.USES,
+        status=RelationStatus.CANDIDATE,
+        evidence=evidence,
+        rationale="Historical model output.",
+    )
+
+    historical = GraphAnnotation(
+        schema_version="2",
+        nodes=(paper, instrument),
+        relations=(relation,),
+    )
+    assert historical.schema_version == "2"
+
+    with pytest.raises(ValidationError, match="invalid ontology v3 endpoints"):
+        GraphAnnotation(
+            schema_version="3",
+            nodes=(paper, instrument),
+            relations=(relation,),
+        )
+
+
+
+def test_ontology_v2_rejects_invalid_relation_endpoints() -> None:
+    evidence = (_ref(SOURCE_HASH, SOURCE_BLOCK),)
+    paper = GraphNode(
+        node_id="paper",
+        node_type=NodeType.PAPER,
+        name="Paper",
+        document_sha256=SOURCE_HASH,
+        evidence=evidence,
+    )
+    process = GraphNode(
+        node_id="process",
+        node_type=NodeType.PROCESS,
+        name="Experiment",
+        document_sha256=SOURCE_HASH,
+        evidence=evidence,
+    )
+    with pytest.raises(ValidationError, match="invalid ontology v2 endpoints"):
+        GraphAnnotation(
+            schema_version="2",
+            nodes=(paper, process),
+            relations=(
+                GraphRelation(
+                    relation_id="invalid_report",
+                    source_node_id="process",
+                    target_node_id="paper",
+                    relation_type=RelationType.REPORTS,
+                    status=RelationStatus.CANDIDATE,
+                    evidence=evidence,
+                    rationale="This direction is not valid for reports.",
+                ),
+            ),
+        )
+
+
+@pytest.mark.parametrize("paper_count", (0, 2))
+def test_ontology_v2_requires_exactly_one_paper_node(paper_count: int) -> None:
+    evidence = (_ref(SOURCE_HASH, SOURCE_BLOCK),)
+    papers = tuple(
+        GraphNode(
+            node_id=f"paper_{index}",
+            node_type=NodeType.PAPER,
+            name=f"Paper {index}",
+            document_sha256=SOURCE_HASH,
+            evidence=evidence,
+        )
+        for index in range(paper_count)
+    )
+    concept = GraphNode(
+        node_id="concept",
+        node_type=NodeType.CONCEPT,
+        name="Research topic",
+        document_sha256=SOURCE_HASH,
+        evidence=evidence,
+    )
+
+    with pytest.raises(ValidationError, match="exactly one paper node"):
+        GraphAnnotation(
+            schema_version="2",
+            nodes=(*papers, concept),
+            relations=(),
+        )
+
+
+def test_measurement_fields_require_observation_node() -> None:
+    with pytest.raises(ValidationError, match="measurement fields require"):
+        GraphNode(
+            node_id="concept",
+            node_type=NodeType.CONCEPT,
+            name="Temperature",
+            value=37.2,
+            unit="celsius",
+            document_sha256=SOURCE_HASH,
+            evidence=(_ref(SOURCE_HASH, SOURCE_BLOCK),),
+        )
+
+
+def test_ontology_v2_rejects_legacy_types_but_v1_remains_readable() -> None:
+    legacy = GraphAnnotation(
+        schema_version="1",
+        nodes=(
+            GraphNode(
+                node_id="method",
+                node_type=NodeType.METHOD,
+                name="Legacy method",
+                document_sha256=SOURCE_HASH,
+                evidence=(_ref(SOURCE_HASH, SOURCE_BLOCK),),
+            ),
+        ),
+        relations=(),
+    )
+    assert legacy.nodes[0].node_type is NodeType.METHOD
+
+    with pytest.raises(ValidationError, match="legacy node type"):
+        GraphAnnotation(
+            schema_version="2",
+            nodes=legacy.nodes,
+            relations=(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("historical_version", "canonical_version"),
+    (
+        ("v1", "1"),
+        ("1.0", "1"),
+        ("1.0.0", "1"),
+        ("v1.0.0", "1"),
+        ("v2", "2"),
+        ("2.0", "2"),
+        ("2.0.0", "2"),
+        ("v2.0.0", "2"),
+        ("v3", "3"),
+        ("3.0", "3"),
+        ("3.0.0", "3"),
+        ("v3.0.0", "3"),
+    ),
+)
+def test_historical_schema_alias_is_normalized(
+    historical_version: str, canonical_version: str
+) -> None:
+    annotation = GraphAnnotation.model_validate(
+        {
+            "schema_version": historical_version,
+            "nodes": [
+                {
+                    "node_id": "paper",
+                    "node_type": "paper",
+                    "name": "Historical paper",
+                    "document_sha256": SOURCE_HASH,
+                    "evidence": [
+                        {
+                            "source_sha256": SOURCE_HASH,
+                            "block_id": SOURCE_BLOCK,
+                        }
+                    ],
+                }
+            ],
+            "relations": [],
+        }
+    )
+
+    assert annotation.schema_version == canonical_version
+    assert annotation.model_dump()["schema_version"] == canonical_version
+
+
+@pytest.mark.parametrize("unsupported_version", ("1.1", "1.0.1", "4", "latest"))
+def test_unknown_schema_versions_remain_rejected(unsupported_version: str) -> None:
+    with pytest.raises(ValidationError, match="Input should be '1', '2' or '3'"):
+        GraphAnnotation.model_validate(
+            {
+                "schema_version": unsupported_version,
+                "nodes": [
+                    {
+                        "node_id": "paper",
+                        "node_type": "paper",
+                        "name": "Unsupported version",
+                        "document_sha256": SOURCE_HASH,
+                        "evidence": [
+                            {
+                                "source_sha256": SOURCE_HASH,
+                                "block_id": SOURCE_BLOCK,
+                            }
+                        ],
+                    }
+                ],
+                "relations": [],
+            }
+        )
+
+
 def test_real_gold_fixture_shape() -> None:
     fixture = Path(__file__).resolve().parents[2] / "data" / "annotations" / "phase0_gold.json"
     annotation = GraphAnnotation.model_validate_json(fixture.read_text(encoding="utf-8"))

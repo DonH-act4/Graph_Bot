@@ -32,6 +32,8 @@ downloads/
 eggs/
 .eggs/
 lib/
+!frontend/src/lib/
+!frontend/src/lib/**
 lib64/
 parts/
 sdist/
@@ -192,6 +194,9 @@ privatecredentials/*
 # Node (scripts/agui-client)
 node_modules/
 package-lock.json
+!frontend/package-lock.json
+frontend/.vitest/
+*.tsbuildinfo
 
 # Live-app smoke test failure screenshot (scripts/smoke_live_app.py)
 smoke_live_app_failure.png

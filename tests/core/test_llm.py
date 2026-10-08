@@ -18,6 +18,13 @@ from schema.models import (
 )
 
 
+@pytest.fixture(autouse=True)
+def isolated_model_cache():
+    get_model.cache_clear()
+    yield
+    get_model.cache_clear()
+
+
 def test_get_model_openai():
     with patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
         model = get_model(OpenAIModelName.GPT_5_NANO)
@@ -76,6 +83,17 @@ def test_get_model_ollama():
         assert isinstance(model, ChatOllama)
         assert model.model == "llama3.3"
         assert model.temperature == 0.5
+
+
+def test_get_model_gpt_oss_enables_reasoning_and_explicit_budgets():
+    get_model.cache_clear()
+    with patch("core.settings.settings.OLLAMA_MODEL", "gpt-oss:20b"):
+        model = get_model(OllamaModelName.OLLAMA_GENERIC)
+        assert isinstance(model, ChatOllama)
+        assert model.reasoning is True
+        assert model.num_ctx == 16_384
+        assert model.num_predict == 8_192
+    get_model.cache_clear()
 
 
 def test_get_model_fake():

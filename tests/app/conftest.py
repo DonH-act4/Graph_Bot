@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 import pytest
 
-from schema import AgentInfo, ServiceMetadata
+from schema import AgentInfo, ServiceMetadata, UserThreads
 from schema.models import OpenAIModelName
 
 
@@ -28,4 +28,5 @@ def mock_agent_client(mock_env):
         mock_agent_client_instance.info = mock_info
         # Give the mock a deterministic selected agent.
         mock_agent_client_instance.agent = "test-agent"
+        mock_agent_client_instance.get_user_threads.return_value = UserThreads(threads=[])
         yield mock_agent_client_instance

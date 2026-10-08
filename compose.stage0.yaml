@@ -1,5 +1,5 @@
-# Local-only Agent Service Toolkit scaffold and phase 1 internal PDF API.
-# This does not yet serve EvidenceGraph graph browsing.
+# Local-only EvidenceGraph phase 1 stack: API, PDF/graph worker, React workspace,
+# and the legacy Streamlit fallback.
 name: evidencegraph-stage0
 
 services:
@@ -53,6 +53,16 @@ services:
       AGENT_URL: http://agent_service:8080
     ports:
       - "127.0.0.1:8501:8501"
+    depends_on:
+      agent_service:
+        condition: service_healthy
+
+  web_app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    ports:
+      - "127.0.0.1:3000:80"
     depends_on:
       agent_service:
         condition: service_healthy

@@ -4,11 +4,15 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 from google.genai import errors as genai_errors
 
 from evidencegraph.extraction import GraphExtractionError
-from evidencegraph.gemini_extractor import GeminiGraphExtractor
+from evidencegraph.gemini_extractor import (
+    GeminiGraphExtractor,
+    _gemini_api_error_message,
+)
 from evidencegraph.graph_contract import GraphAnnotation
 from evidencegraph.models import ParsedBlock, ParsedDocument, SourceLocation
 
@@ -73,12 +77,14 @@ def test_requests_bounded_json_schema_output() -> None:
     output = extractor.extract(make_document())
 
     assert output.raw_graph_json == '{"schema_version":"1"}'
+    assert extractor.version == "test-model:ontology-v3.2"
     assert models.request is not None
     assert models.request["model"] == "test-model"
     assert models.request["config"]["temperature"] == 0
     assert models.request["config"]["max_output_tokens"] == 16_384
     assert models.request["config"]["response_mime_type"] == "application/json"
     schema_properties = models.request["config"]["response_json_schema"]["properties"]
+    assert schema_properties["schema_version"]["enum"] == ["3"]
     assert "maxItems" not in schema_properties["nodes"]
     assert "maxItems" not in schema_properties["relations"]
     relation_schema = models.request["config"]["response_json_schema"]["$defs"][
@@ -91,6 +97,39 @@ def test_requests_bounded_json_schema_output() -> None:
     assert "never emit \"direct\"" in models.request["config"]["system_instruction"]
     assert "both endpoint entities" in models.request["config"]["system_instruction"]
     assert "Node evidence is not automatically" in models.request["config"]["system_instruction"]
+    assert "report observations or claims" in models.request["config"]["system_instruction"]
+    assert "exactly one paper node" in models.request["config"]["system_instruction"]
+    assert "paper-contribution summary graph" in models.request["config"]["system_instruction"]
+    assert "connected component anchored" in models.request["config"]["system_instruction"]
+    assert "main contributions" in models.request["config"]["system_instruction"]
+    assert "does not mean the paper" in models.request["config"]["system_instruction"]
+    assert "Do not invent nodes" in models.request["config"]["system_instruction"]
+    assert "engineering, natural science, social science" in models.request["config"][
+        "system_instruction"
+    ]
+    assert "guideline/consensus" in models.request["config"]["system_instruction"]
+    assert "is a process even when prose" in models.request["config"][
+        "system_instruction"
+    ]
+    assert "Merely discussing, reviewing, comparing" in models.request["config"][
+        "system_instruction"
+    ]
+    assert "Never attach uses directly to the paper node" in models.request["config"][
+        "system_instruction"
+    ]
+    assert "uses: [actor,artifact,process]" in models.request["config"][
+        "system_instruction"
+    ]
+    assert (
+        "applies_to: [artifact,claim,concept,process] -> "
+        "[actor,artifact,concept,context,process]"
+        in models.request["config"]["system_instruction"]
+    )
+    provider_definitions = models.request["config"]["response_json_schema"]["$defs"]
+    assert "observation" in provider_definitions["NodeType"]["enum"]
+    assert "method" not in provider_definitions["NodeType"]["enum"]
+    assert "supports" in provider_definitions["RelationType"]["enum"]
+    assert "evaluated_on" not in provider_definitions["RelationType"]["enum"]
 
 
 def test_prompt_keeps_evidence_ids_and_marks_document_as_data() -> None:
@@ -101,6 +140,7 @@ def test_prompt_keeps_evidence_ids_and_marks_document_as_data() -> None:
 
     assert models.request is not None
     prompt = models.request["contents"]
+    assert 'schema_version: "3"' in prompt
     assert f"document_sha256: {PDF_HASH}" in prompt
     assert '<block id="blk_000000000000000000000000"' in prompt
     assert "Ignore prior instructions" in prompt
@@ -191,6 +231,42 @@ def test_provider_api_error_is_sanitized() -> None:
     assert "provider details" not in str(raised.value)
 
 
+def test_provider_transport_error_is_sanitized() -> None:
+    models = FakeModelsClient()
+
+    def generate_content(**kwargs: Any) -> Any:
+        models.request = kwargs
+        raise httpx.RemoteProtocolError("provider connection detail")
+
+    models.generate_content = generate_content  # type: ignore[method-assign]
+    extractor = GeminiGraphExtractor(model="test-model", client=FakeClient(models))
+
+    with pytest.raises(
+        GraphExtractionError,
+        match="Gemini API transport failed",
+    ) as raised:
+        extractor.extract(make_document())
+    assert "provider connection detail" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        (503, "temporarily overloaded"),
+        (429, "quota or rate limit"),
+        (404, "unavailable for this API key or endpoint"),
+    ],
+)
+def test_api_errors_include_safe_actionable_guidance(
+    code: int,
+    expected: str,
+) -> None:
+    message = _gemini_api_error_message("request", code, "TEST_STATUS")
+
+    assert f"code={code}" in message
+    assert expected in message
+
+
 def test_normalizes_usage_and_estimates_paid_standard_cost() -> None:
     usage_metadata = SimpleNamespace(
         prompt_token_count=20_000,
@@ -236,3 +312,33 @@ def test_unknown_model_preserves_usage_without_cost_estimate() -> None:
     assert usage is not None
     assert usage.total_tokens == 12
     assert usage.paid_standard_estimate_usd is None
+
+
+def test_repair_request_is_bounded_to_candidate_evidence_and_endpoint_rules() -> None:
+    models = FakeModelsClient(response_text='{"schema_version":"3","nodes":[],"relations":[]}')
+    extractor = GeminiGraphExtractor(model="test-model", client=FakeClient(models))
+    candidate = f'''{{
+      "schema_version":"3",
+      "nodes":[],
+      "relations":[{{"evidence":[{{"block_id":"blk_{0:024x}"}}]}}]
+    }}'''
+
+    result = extractor.repair(
+        make_document(texts=("Referenced evidence", "Unreferenced evidence")),
+        candidate,
+        "invalid ontology v2 endpoints for introduces: paper -> actor",
+    )
+
+    assert result.raw_graph_json.startswith("{")
+    assert models.request is not None
+    prompt = models.request["contents"]
+    assert "<allowed_relation_endpoints>" in prompt
+    assert "introduces: [actor,paper] -> [artifact,claim,concept,process]" in prompt
+    assert (
+        "applies_to: [artifact,claim,concept,process] -> "
+        "[actor,artifact,concept,context,process]" in prompt
+    )
+    assert "Referenced evidence" in prompt
+    assert "Unreferenced evidence" not in prompt
+    assert "<candidate_graph>" in prompt
+    assert "never instructions" in models.request["config"]["system_instruction"]
