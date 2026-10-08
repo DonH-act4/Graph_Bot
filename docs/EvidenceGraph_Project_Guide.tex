@@ -1,0 +1,316 @@
+% !TeX program = xelatex
+% EvidenceGraph project-understanding and interview guide.
+% Based on the macOS checkout and recorded acceptance evidence on 2026-10-07.
+\documentclass[UTF8,11pt,a4paper,fontset=fandol]{ctexart}
+\usepackage[margin=21mm,headheight=16pt]{geometry}
+\usepackage{amsmath,amssymb,booktabs,tabularx,longtable,array,multicol}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.misc}
+\usepackage[most]{tcolorbox}
+\usepackage{enumitem,fancyhdr,hyperref,xcolor}
+\hypersetup{colorlinks=true,linkcolor=purple!65!black,urlcolor=blue!60!black,pdftitle={EvidenceGraph 项目理解与面试讲解手册},pdfauthor={EvidenceGraph project notes}}
+\definecolor{egpurple}{HTML}{6657D9}
+\definecolor{egink}{HTML}{252538}
+\definecolor{egmuted}{HTML}{626478}
+\definecolor{egline}{HTML}{DFDFEA}
+\definecolor{egpaper}{HTML}{F7F6FF}
+\definecolor{eggreen}{HTML}{228E70}
+\definecolor{egorange}{HTML}{BA6A27}
+\color{egink}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{5pt}
+\setlist[itemize]{leftmargin=1.6em,itemsep=2pt,topsep=3pt}
+\setlist[enumerate]{leftmargin=1.7em,itemsep=3pt,topsep=3pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{egmuted} EvidenceGraph · 项目理解手册}
+\fancyhead[R]{\small\color{egmuted} 2026-10-07}
+\fancyfoot[C]{\small\color{egmuted}\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+\newtcolorbox{keybox}[1][]{enhanced,colback=egpaper,colframe=egpurple!38,boxrule=.6pt,arc=2mm,left=3mm,right=3mm,top=2mm,bottom=2mm,title={核心理解},fonttitle=\bfseries,coltitle=egpurple,#1}
+\newtcolorbox{limitbox}[1][]{enhanced,colback=orange!4,colframe=egorange!45,boxrule=.6pt,arc=2mm,left=3mm,right=3mm,top=2mm,bottom=2mm,title={不要过度声称},fonttitle=\bfseries,coltitle=egorange,#1}
+\newtcolorbox{practicebox}[1][]{enhanced,colback=green!3,colframe=eggreen!40,boxrule=.6pt,arc=2mm,left=3mm,right=3mm,top=2mm,bottom=2mm,title={你可以自己验证},fonttitle=\bfseries,coltitle=eggreen,#1}
+\newcommand{\code}[1]{\texttt{\footnotesize\detokenize{#1}}}
+\newcommand{\term}[1]{\textbf{#1}}
+\newcommand{\eng}[1]{\textsf{#1}}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\begin{document}
+\begin{titlepage}
+\vspace*{34mm}
+{\color{egpurple}\rule{38mm}{2.4pt}}\\[13mm]
+{\Huge\bfseries EvidenceGraph}\\[3mm]
+{\LARGE 项目理解与面试讲解手册}\\[8mm]
+{\large 从一篇 PDF，到可追溯的图谱与证据对话}\\[18mm]
+\begin{tcolorbox}[colback=egpaper,colframe=egline,boxrule=.7pt,arc=2mm,width=.94\textwidth]
+\large 这不是一份“背技术栈”的文档。你应该读完之后能够说明：用户为什么需要它、每一层做了什么、哪些结论有证据、哪些只是模型候选，以及如果面试官追问某个设计选择，你为什么这样取舍。
+\end{tcolorbox}
+\vfill
+{\small\color{egmuted} 基于 2026-10-07 macOS 工作区的代码与验收记录整理。当前工作区含大量未提交改动；本文描述的是该本机演示切片，不是已上线产品。}\\[3mm]
+{\small\color{egmuted} 阅读建议：第 1、2、5、8、10 章先读；随后按第 12 章自测，再回查代码。}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+\section{先用一分钟讲清这个项目}
+
+\begin{keybox}
+EvidenceGraph 是一个\term{单篇研究论文的证据优先阅读工具}：上传可提取文字的 PDF，系统用 Docling 把内容拆成带页码的原文块；本地大模型从代表性段落提炼论文、方法、研究对象、观察结果和主张，组成可拖动的关系图。点一个节点或关系，就能看到它引用的原文卡片；选中卡片后，可以把这些原文带进下一轮对话。即使不选卡片，系统也会从论文中检索少量相关原文回答。
+\end{keybox}
+
+它解决的不是“画一个好看的图”，而是两个常见断层：阅读长论文时难以快速把握\term{研究做了什么}；普通 AI 摘要或回答很难让人判断\term{它凭什么这样说}。本项目把“概览图”和“原文依据”连在一起。
+
+当前真实的产品承诺要克制：\term{可展示、可追溯、可追问}；\term{不保证图谱完整或关系语义永远正确}。来源 ID 存在，说明“可以回到某一段”，不等于那一段真正支持这个结论。
+
+\begin{limitbox}
+现在不是公开的多用户生产平台，也不是跨论文知识库。路线图的跨论文比较、图检索提升问答和公网部署仍未验收。SQLite、版本化 JSON、本地 worker 与远程 Ollama 足够支撑当前作品集演示，但不是按高并发服务设计的。
+\end{limitbox}
+
+\subsection*{你在面试中可以怎么定位它}
+建议说“\term{我主导了产品需求、关键约束和验收，使用 AI 编码助手加速实现，并用真实论文验证设计}”。如果代码主要由 AI 编写，不必假装逐行手写；真正有竞争力的是你能解释系统边界、发现不合理结果并说出怎么改。
+
+\section{用户到底会经历什么}
+
+\begin{enumerate}
+\item 游客进入 React 工作区，上传一篇 PDF（上限 25 MiB）。服务端检查文件头和大小，保存原件，用内容 SHA-256 作为文档版本标识。
+\item 独立 worker 解析 PDF；页面显示 Upload、Docling、Evidence、Model、Validate、Save 等里程碑状态。数字是\term{阶段进度}，不是准确剩余时间。
+\item 解析成功后，工作区为该论文请求当前配置的图谱模型；默认本机演示使用 Windows 机器上通过 Ollama 提供的 \code{gpt-oss:20b}。模型连接中断或输出不合法会显示失败并允许重试；已有成功图不会被失败重建覆盖。
+\item 用户打开可拖动的图谱，点节点或连线。网页拿到对应的证据块 ID，向后端取回真实原文和 PDF 页码，展示为卡片。图谱可随时关掉，继续对话。
+\item 游客可浏览图和原文；\term{提问、历史和私人会话需要注册或登录}。用户可以勾选最多 12 张证据卡，作为下一问的限定上下文；也可以直接问，后端自动检索该论文的若干段落。
+\item 工作区保存论文关联、草稿、已选来源和历史消息。Tutorial 页只读展示作者参与的 Water Research 论文的真实保存图谱和三组已保存问答，不会切换或覆盖个人会话。
+\end{enumerate}
+
+\begin{practicebox}
+如果你只演示三分钟：先打开 Tutorial，点一条关系看原文卡和页码；再进入自己的会话选一张证据卡提问；最后刷新页面展示历史恢复。别只指着图讲颜色——关键是\term{关系、原文、回答}之间的闭环。
+\end{practicebox}
+
+\section{系统全貌：两条相连、但不同的流水线}
+
+\begin{center}
+\begin{tikzpicture}[>=Stealth, node distance=4mm, every node/.style={font=\small}, box/.style={draw=egline,rounded corners=2mm,fill=egpaper,align=center,minimum height=9mm,text width=27mm}]
+\node[box] (web) {React 网页\\图谱与对话};
+\node[box,right=of web] (api) {Nginx / FastAPI\\身份与接口};
+\node[box,right=of api] (store) {PaperStore\\PDF / JSON / SQLite};
+\node[box,right=of store] (worker) {独立 worker\\Docling / Ollama};
+\draw[->,thick,egpurple] (web) -- (api);
+\draw[<->,thick,egpurple] (api) -- (store);
+\draw[<->,thick,egpurple] (store) -- (worker);
+\end{tikzpicture}
+\end{center}
+
+\textbf{图谱路径：}\ PDF $\rightarrow$ Docling 原文块 $\rightarrow$ 代表段抽取 $\rightarrow$ 模型候选 JSON $\rightarrow$ 本地结构/来源校验 $\rightarrow$ 版本化图谱 $\rightarrow$ 交互画布。
+
+\textbf{问答路径：}\ 问题 + 当前论文 + 可选的证据块 ID $\rightarrow$ 服务端取真实原文（或自动检索）$\rightarrow$ LangGraph 对话 $\rightarrow$ 本地模型回答并标引用 $\rightarrow$ 消息持久化。
+
+这两条路\term{共享同一份解析后的论文}，但问答\term{并不是}先在图数据库上遍历关系再生成答案。图是帮助人理解和选择证据的界面；默认问答用的是原文块检索。这是当前实现与路线图中“图检索增强问答”的重要区别。
+
+还要分清名字里两个“Graph”：\term{LangGraph} 是后端编排对话步骤、保存可继续状态的工作流框架；\term{论文知识图谱} 是给用户看的研究实体与关系。前者不会自动保证后者正确，也不意味着项目已经使用 Neo4j 图数据库。
+
+\begin{tabularx}{\textwidth}{@{}p{26mm}Y Y@{}}
+\toprule
+边界 & 做的事 & 为什么拆开 \\
+\midrule
+React + Nginx & 交互、状态、卡片、同源 \code{/api} 代理 & 浏览器不直接接触模型地址或数据库 \\
+FastAPI & 上传、权限、任务状态、证据查询、问答入口 & 快速返回，不在请求进程中解析长 PDF \\
+Paper worker & 领取任务、调用 Docling 与抽取模型、失败落盘 & 重 CPU/原生依赖故障不拖垮 API \\
+Ollama & 在另一台 GPU 机器上运行 \code{gpt-oss:20b} & 数据与模型接口分离；网页只见服务端代理 \\
+SQLite + 文件 & 会话、账号、授权、原 PDF、解析块、图版本 & 单机演示简单、可检查；还没必要上多种数据库 \\
+\bottomrule
+\end{tabularx}
+
+\section{从 PDF 到可定位的原文块}
+
+\subsection{Docling 不是“生成图谱的模型”}
+Docling 做\term{文档解析}：识别页、文本元素和表格，把 PDF 转成结构化块。EvidenceGraph 给每个块保留原文、页码、可得的页面坐标、元素引用、解析器版本和文档哈希。代码入口是 \path{src/evidencegraph/ingestion.py}。当前配置\term{关闭 OCR}，所以图片型扫描 PDF 可能被明确拒绝；能上传 25 MiB 不等于任何 25 MiB 文件都能成功解析。
+
+\subsection{为什么要有文档哈希和 block ID}
+同名论文的 PDF 可能被排版、修改甚至替换。系统用整个文件的 SHA-256 标识\term{这一份确切字节版本}；证据块 ID 结合文件哈希、解析器版本、页码、类型、文本和同页重复序号生成。于是“第 3 页某段原文”不只是松散字符串，而是有版本归属的对象。若 PDF 或解析文本变化，旧引用不能被悄悄当成新来源。
+
+\begin{keybox}
+\term{Provenance（来源定位）}回答“这段话来自哪份 PDF 的哪一页、哪个块”；\term{semantic correctness（语义正确性）}回答“这段话是否真的证明图上的关系”。前者可用代码严格检查，后者还需要人工评测或更强的语义判定。
+\end{keybox}
+
+\subsection{为什么解析要在独立 worker}
+早期把 Docling 放在 API 进程内，真实上传曾使 API 进程退出。现在 API 只保存原件和待处理状态；单独的 \code{paper_worker} 通过共享卷领取任务。它既降低 API 被原生依赖/内存负载拖垮的风险，也让页面能查询“排队、解析、保存、失败”。这仍是\term{本地单 worker 文件队列}，不是 RabbitMQ 或分布式调度。任务异常、删除竞态和容器重启做了局部保护，但没有承诺大规模并发。
+
+\section{模型怎样把原文变成图}
+
+\subsection{先定义共同语言，再请模型填写}
+\term{Ontology} 可以理解为“允许哪些类型的点、哪些类型的边，以及边能连谁”。当前新图用 schema v3：八种核心节点是 paper、actor、concept、artifact、process、observation、claim、context。例子：这篇论文是 paper；实验流程或算法可归 process；仪器、材料、数据集可归 artifact；测量到的准确率可归 observation；作者的总结论断可归 claim。具体领域词放在可选的 \code{domain_type}，不为医学、工程、社科各造一套互不兼容的图。
+
+核心边有 introduces、studies、uses、applies\_to、measures、produces、reports、supports、contradicts、compares\_with、builds\_on、part\_of。可选 \code{domain_relation} 承载更具体的领域语义。边的方向和两端类型有后端矩阵校验，例如 v3 不允许 \code{paper -> uses -> process}；“论文研究某流程”应表达为 \code{paper -> studies -> process}。规则在 \code{src/evidencegraph/graph_contract.py}，不是只写在 prompt 里。
+
+\subsection{为什么不把全文一次丢给模型}
+一篇论文可能有数百个解析块。当前 GPT-OSS 路径只抽取摘要、方法、结果、结论等\term{代表性段落}，按约 12,000 字符分段；不识别章节时用有界抽样兜底。每段模型生成一个小候选图，程序再按类型、规范化名称和测量条件做确定性合并，限制最终最多 25 个节点、40 条关系。这样节省上下文和等待时间，也让图更像“研究概览”；代价是\term{不保证覆盖全文所有发现}。原始解析块仍保留，问答检索不局限于图谱抽样段落。
+
+本地演示图谱模型为 \code{gpt-oss:20b}，通过 Mac 的 Tailscale/SSH 本机转发到 Windows Ollama；配置由服务端持有，不暴露给浏览器。图谱请求使用 JSON 模式、较低推理强度、16,384 上下文与 8,192 输出 token 上限。\term{输出上限是允许的最大长度，不是每次都会生成这么多}；处理变慢通常还与段数、输入长度、模型推理、修复请求、GPU 负载和网络隧道有关。模型返回 HTTP 200 但空内容或截断 JSON，也会被判失败。
+
+\subsection{prompt 与代码规则各管什么}
+Prompt 负责让模型理解论文体裁、关系语义、先提炼什么、何时不要猜测、如何填写证据 ID；它是\term{行为引导}。Pydantic/schema 与服务端校验负责检查：JSON 形状、节点/关系数量、端点类型、文档哈希、证据块真实存在、自动产物不能冒充人工核实。它们是\term{确定性的护栏}。少量端点错误会尝试一次有限修复，仍不行时可在阈值内删掉坏关系；不会为了“图看起来连着”凭空补边。断开论文主节点的分量会被省略并发出警告。
+
+\begin{limitbox}
+自动图上的边属于\term{模型候选}。程序能证明“引用的 block ID 确实属于这份 PDF”，并对 \code{uses} 做浅层动作词检查；但它不能普遍证明“源实体确实对目标实体做了这个动作”。曾出现医学论文把“组织推荐诊断技术”误读为“技术使用组织”的方向错误。
+\end{limitbox}
+
+\section{点图、看卡片、带证据提问：闭环怎样成立}
+
+图谱前端在 \code{frontend/src/components/GraphWorkspace.tsx}。它用力导向画布显示点和边，支持拖动、缩放、搜索与悬浮邻域。点击后，前端并不把模型当年生成的一段原文直接当真，而是取节点/边里记录的 \code{block_id}，向 \code{GET /papers/{id}/blocks/{block_id}} 请求服务端保存的块，再显示原文卡片和 PDF 页链接。
+
+选中卡片后，浏览器只把\term{文档 ID + 最多 12 个 block ID} 带到下一问，不提交可任意篡改的“原文”。服务端再次确认：用户有该 PDF 读取权、ID 属于同一份 PDF、块真实存在，随后把对应原文放进模型上下文。这个设计防止有人在浏览器里把伪造文本假装成论文证据。
+
+\begin{center}
+\begin{tcolorbox}[width=.96\textwidth,colback=egpaper,colframe=egline,boxrule=.5pt]
+\textbf{例子（概念示意，不是声称真实论文的具体边）：}\newline
+图上点选 \code{paper --studies--> transfer-learning workflow} $\Rightarrow$ 关系引用 \code{blk_xxx} $\Rightarrow$ 页面显示“Page 3 的原文片段” $\Rightarrow$ 用户勾选卡片并问“这里怎样从仿真迁移到现场？” $\Rightarrow$ 服务端取出该块，模型根据它回答并标示页码。
+\end{tcolorbox}
+\end{center}
+
+如果\term{不选卡片}，服务端也会按问题从整篇解析块里选最多 10 块、合计最多约 18,000 字符：使用英文词重叠、中文关键词扩展和“方法/结果/概览”章节倾向。这是小而可解释的检索基线；不是 embedding 向量搜索，也不在图中做路径推理。它可能漏掉同义改写、跨表格的信息或细微上下文。代码见 \code{src/evidencegraph/retrieval.py} 与 \code{src/service/service.py}。
+
+有证据上下文时，\code{research_assistant.py} 会进入 evidence-only 模式，不调用网页搜索或计算器，要求回答引用真实页码与 block ID，证据不够时承认不足。引用可点击回 PDF 页；\term{但模型仍可能过度概括}。当前还没有“回答引用自动反向高亮图谱节点”的完整验收。
+
+\section{状态、版本和存储：刷新后为什么还在}
+
+\begin{tabularx}{\textwidth}{@{}p{41mm}Y@{}}
+\toprule
+保存位置（容器内） & 保存内容与作用 \\
+\midrule
+\shortstack[l]{\code{/app/data/}\\\code{evidencegraph/<hash>/}} & 原 PDF、Docling 解析 JSON、PDF/图任务状态、图版本 JSON。相同字节的 PDF 可以共享一个物理副本。 \\
+\code{stage0-smoke.db} & LangGraph SQLite checkpoints：真实对话消息及继续对话所需状态。 \\
+\code{conversations.sqlite3} & 对话标题、所属论文、草稿、选中证据 ID、更新时间；空白但已上传论文的会话也能列在历史里。 \\
+\code{accounts.sqlite3} 与 \code{paper-access.sqlite3} & 账号密码哈希、登录会话哈希、游客令牌哈希以及论文读取授权。 \\
+\code{showcase.json} & Tutorial 所指向的真实已保存会话索引；不是手写假回答。 \\
+\bottomrule
+\end{tabularx}
+
+PDF 处理与图处理各有自己的任务状态。成功图写成不可变的 \code{graphs/000001.json}、\code{000002.json} 等，\code{current_version} 只在完整成功后切换，所以重试/重建失败仍可看旧图。为什么不覆盖旧 JSON？因为比较模型、prompt 和规则版本时需要知道“当时输出是什么”，也要避免一次失败把演示里的图抹掉。
+
+删除个人会话会删除消息与工作区记录；如果其 PDF 没有其他会话或 Tutorial 引用，才尝试停止相关任务并清理该 PDF、解析块及图版本。若同一哈希 PDF 被其他用户/会话共享，服务端保守拒绝物理删除，不会为了一个人的操作删掉别人的来源。远端模型在 HTTP 断开后仍可能短暂运行；跨 SQLite 与文件系统的删除也不是单一原子事务，这是已知限制。
+
+\section{身份与安全：本机能演示，不等于能公网开放}
+
+当前游客可上传 PDF、生成/浏览图和证据；问答与私人历史需登录。游客令牌有效 24 小时，登录会话有效 7 天；浏览器持有 HttpOnly、SameSite=Lax Cookie，数据库保存令牌的 SHA-256，而非原令牌。密码用 Argon2id 哈希，连续失败有限时锁定。登录时，当前浏览器游客持有的论文授权转给账号。\term{文档哈希不是访问密码}：知道链接不代表获准读取原文。
+
+但安全还有四个没收口的主题：
+\begin{enumerate}
+\item \term{CSRF}：浏览器会自动携带 Cookie。恶意网站可能诱导已登录用户向本站发出修改请求。SameSite=Lax 有帮助，但不能代替对修改操作的完整 Origin/CSRF token 策略。
+\item \term{账号/IP 配额}：上传、解析和 GPU 推理都昂贵。没有限速与用量额度，少量脚本就可能占满 worker 或刷爆资源；本地单 worker 也会造成排队。
+\item \term{HTTPS 与反向代理}：公网访问需要 TLS 终止、可信代理头、Secure Cookie、正确的同源和上传/超时配置。当前 Nginx 是本机开发代理，不是已经验收的互联网入口。
+\item \term{备份恢复}：有备份文件不等于可恢复。必须在隔离环境实测数据库 + PDF + 图版本的一致恢复，设计保留期、权限和泄漏处理。
+\end{enumerate}
+
+因此正确说法是“\term{完成本机账号/权限演示，公网发布前仍要做安全和运营收口}”。不要在简历或面试中称其为 fully production-ready。
+
+\section{我们为什么这样选，而没有把技术栈堆满}
+
+\begin{tabularx}{\textwidth}{@{}p{48mm}Y Y@{}}
+\toprule
+选择 & 当前理由 & 何时考虑升级 \\
+\midrule
+SQLite + 版本化 JSON，而非 PostgreSQL/Neo4j/Qdrant 全上 & 单机演示需要可检查、可复现和低运维；图还很小，主要是浏览不是复杂路径查询 & 并发写入、跨文档关联查询、备份恢复或检索评测显示瓶颈 \\
+轻量词汇检索，而非立即上 embedding & 先获得可解释基线，避免新模型、索引及评测成本 & 固定问答集证明同义改写等召回不足，并量化向量/混合检索收益 \\
+独立 worker，而非 API 内直接运行 Docling & 真实 API 崩溃经历说明重任务必须隔离 & 多机/高并发时换正式队列、任务租约和资源治理 \\
+React 工作区，而非继续全部放在 Streamlit & 聊天、图覆盖层、卡片选择与持久状态需要更细交互 & 当前方案可继续迭代，无须为了简历再重写框架 \\
+本地 GPT-OSS 20B，而非依赖免费云 API & 演示不受区域可用性与免费层配额左右，已有远端 GPU & 需离线部署、成本/速度/语义质量比较时再替换或多模型路由 \\
+\bottomrule
+\end{tabularx}
+
+所谓“工程判断”不是选最流行的工具，而是把\term{可验证目标、规模和成本}放在前面。这里图数据库、向量数据库都曾在目标架构中出现，但当前代码并未用它们支撑产品核心链路；面试时要明确区分“计划”和“实现”。
+
+\section{真实证据、测试数字与不能推导出的结论}
+
+截至 2026-10-07 路线图记录：Python 回归 437 通过、4 个默认跳过的 Docker 用例；React 40 项通过并完成构建；Ruff 与 Pyrefly 通过。\term{这是已有验收记录，不是本文编写时重新跑出的结果。} 测试主要保护接口、契约、坏输出、会话和权限等行为，不自动证明跨学科图的语义准确率。
+
+真实 Tutorial 论文为你参与撰写的 \emph{Water Research} 文章：\emph{Explainable simulation-to-field transfer learning for transient-based leak detection in water distribution networks}。\par
+DOI：\href{https://doi.org/10.1016/j.watres.2026.126464}{10.1016/j.watres.2026.126464}。本机记录：20 页、约 6.87 MB、Docling 258 个来源块；当前保存的概览图 9 个节点、12 条关系；三问三答来自真实保存的模型会话。一次在\term{已解析 PDF + 热模型}条件下的重生成耗时 44.5 秒，\term{不能}当成首次上传到完成的 SLA。12 处回答引用能匹配真实块，但第一答有过宽的基线比较说法。这正好体现\term{引用有效性与语义正确性不是一回事}。
+
+另一组本地模型对照只涉及医学和 AI 两个领域、少量段落及重复试验；gpt-oss 在结构/来源合格率和速度上对该样本更有利，但出现医学关系方向错误，不能据此声称“20B 能准确读所有工程、社科、医学论文”。目前系统是\term{可演示原型 + 有部分真实验收}，不是经过盲评的大规模抽取质量产品。
+
+\begin{practicebox}
+面试官问“你怎么证明图谱质量？”建议分三层答：\textbf{结构正确}（schema、端点、版本）；\textbf{来源正确}（哈希和 block ID）；\textbf{语义正确}（人工金标准、盲评、关系级 precision/recall 与错误分类）。当前前两层有自动检查，第三层只有有限样例人工抽查，尚未形成跨领域统计结论。
+\end{practicebox}
+
+\section{失败场景与下一步工作}
+
+\begin{tabularx}{\textwidth}{@{}p{38mm}Y Y@{}}
+\toprule
+看到的现象 & 可能原因 & 现有处理 / 下一步 \\
+\midrule
+卡在 Docling & 大文件、复杂表格、扫描件或资源不足 & 状态可见但没有可靠逐页 ETA；测冷缓存、页数、内存和超时 \\
+图谱失败 & Ollama 不可达、输出截断、JSON/ontology 失效、引用块不存在 & 有错误/重试，有限修复后仍失败则不保存坏图；固定样本复测 \\
+图点少或关系断开 & 代表段抽样、25/40 上限、坏关系/孤立分量被省略 & 给出警告；评估召回与语义，不为视觉效果造边 \\
+答案有引用却不准确 & 检索错过关键段，或模型过度解读弱证据 & 建问答金标准、人工判语义支持，区分“找得到”与“答得对” \\
+旧会话不见了 & 本机账号门槛启用后，旧浏览器 ID 不能自动归到新账号 & 旧数据保留，不私自认领；需明确迁移方案 \\
+\bottomrule
+\end{tabularx}
+
+合理的下一阶段不是立刻上更多框架，而是固定一个跨学科小评测集，逐条标关系是否正确、引用是否足够、模型漏了什么；再做冷启动与并发资源测试、CSRF/配额/HTTPS、备份恢复演练。若数据表明轻量检索不够，再引入向量或图检索，比较其增益与复杂度。
+
+\section{面试时怎么讲，既有竞争力又诚实}
+
+\subsection*{30 秒版本}
+“我做了一个证据优先的论文阅读原型。用户上传 PDF 后，系统把内容解析成带页码的原文块，再由本地模型生成可交互的研究概览图；点一条关系就能看原文，也能选择原文卡片参与下一轮提问。我重点设计了来源校验、模型输出校验、失败保留旧图、会话恢复和游客/登录边界。真实工程论文样例已跑通，但跨领域语义准确率和公网安全仍在评估。”
+
+\subsection*{两分钟版本}
+“问题是传统 PDF 问答能回答，但用户往往不知道一个结论从哪来；静态知识图又容易成为无依据的漂亮图。我把工作流分成两条：一条是 Docling 解析、保留文件哈希/页码/块 ID，再让 GPT-OSS 20B 从代表段落生成候选图，并用 Pydantic 与关系端点、来源 ID 规则拦住坏输出；另一条是用户在图中选证据，或由轻量检索从整篇论文取块，之后再由模型回答并给页码引用。长任务放独立 worker，版本化图让失败重建不覆盖成功结果；React 前端把图谱做成随时可打开的证据工作区。当前单篇论文真实样例可以从图点到原文、带卡片问答并恢复历史。我也发现真实引用不等于语义支持，所以把质量评估和安全发布列成下一步。”
+
+\subsection*{如果被问“这些代码是不是 AI 写的？”}
+“这个项目是 AI 辅助开发。我负责需求取舍、论文样例、功能验收和错误反馈；让编码助手实现多个切片，再通过测试、真实 PDF 和浏览器操作检查结果。我不会把自己说成逐行手写了所有模块；我能清楚解释这条数据流、关键设计和缺陷，也能定位并修改下一步。”
+
+这比含糊地说“我独立完成全栈系统”更可信。面试前至少亲手完成第 12 章的一次代码回查和一次网页演示；否则再漂亮的项目描述也经不起追问。
+
+\section{十个高概率追问：答案与不该说的话}
+
+\begin{enumerate}
+\item \textbf{为什么要图，而不是只做 RAG？} 图帮助人快速浏览论文结构、主动选择原文；RAG 解决按问题找证据。当前图并不驱动默认检索，两者互补。
+\item \textbf{为什么每个点和边都要有 evidence？} 否则图只是一组无法复核的模型断言。证据 ID 把显示对象绑定到确切 PDF 版本和原文位置。
+\item \textbf{有引用就是对的吗？} 不是。验证器只证明引用存在且归属正确；还可能错读关系方向、证据覆盖范围或数值条件。
+\item \textbf{为什么只抽代表段？} 为降低上下文、延迟和图谱拥挤，目标是概览而非全文知识库；代价是召回不足，需要评测量化。
+\item \textbf{Ontology 是不是写个 prompt？} 不是。Prompt 提供语义指导；Pydantic schema、端点矩阵和来源校验在模型之外执行硬约束。
+\item \textbf{为什么用 worker？} 真 PDF 解析曾导致 API 进程退出；隔离长任务让 API 保持响应，也能保存任务状态与错误。
+\item \textbf{为什么没有 Neo4j/Qdrant？} 当前单篇小图以浏览为主，SQLite/JSON 已满足演示。只有跨论文路径查询或检索收益被测出来，才值得增加组件。
+\item \textbf{已支持任意学科吗？} Schema 刻意通用，工程、理科、社科、医学都可尝试；但没有足够的跨学科语义评测，不能保证任意论文质量。
+\item \textbf{如何防止用户伪造 evidence？} 浏览器只提交 block ID；服务端检查账号/游客对 PDF 的授权，并从存储中取真实块，不信任客户端提交的原文。
+\item \textbf{现在能公开上线吗？} 不宜。还缺 CSRF、账号/IP 配额、HTTPS/代理验收、恢复演练和系统性质量评估。
+\end{enumerate}
+
+\section{你真正掌握它的自测清单}
+
+不用背类名。能不用看本手册回答下面七题，就基本能在面试中站稳：
+\begin{enumerate}
+\item 从浏览器按下 Upload 到图出现，哪几步是同步 HTTP，哪几步是 worker 后台任务？
+\item 关系上的 \code{block_id} 是怎么与\term{这一版} PDF 绑定的？如果 PDF 替换会怎样？
+\item 为什么模型输出一条“看起来合理”的边，服务端仍可能删掉或拒绝整张图？
+\item 用户没选证据也能提问；这时文本是怎么找到的？为什么它可能找错？
+\item 一次 regenerate 失败后，旧图为什么还在？删除一段共享 PDF 又为什么会被拒绝？
+\item 你向面试官展示真实 Water Research 样例时，哪些数字能说、哪些不能外推？
+\item 如果明天公网部署，你最先补的三项安全/运维控制是什么，为什么？
+\end{enumerate}
+
+建议做一次 20 分钟“反向走查”：在网页上传测试 PDF、点边找到原文页、选卡片提问，然后打开下面源码目录，指出每一步的服务端入口。你不是要成为所有依赖的作者；你要理解系统的\term{责任边界和失败方式}。
+
+\section*{附录 A：代码地图与术语速查}
+\addcontentsline{toc}{section}{附录 A：代码地图与术语速查}
+\begin{tabularx}{\textwidth}{@{}p{45mm}Y@{}}
+\toprule
+你要找什么 & 从这里开始 \\
+\midrule
+PDF 解析、来源块 & \code{src/evidencegraph/ingestion.py}, \code{src/evidencegraph/models.py} \\
+图类型、关系端点 & \code{src/evidencegraph/graph_contract.py} \\
+模型请求、分段与合并 & \code{src/evidencegraph/ollama_extractor.py}, \code{src/evidencegraph/extraction.py} \\
+后台任务、图版本 & \code{src/evidencegraph/paper_worker.py}, \code{src/evidencegraph/papers.py} \\
+上传、图与原文 API & \code{src/service/papers.py} \\
+自动检索、证据问答 & \code{src/evidencegraph/retrieval.py}, \code{src/service/service.py}, \code{src/agents/research_assistant.py} \\
+交互图、聊天、Tutorial & \code{frontend/src/components/GraphWorkspace.tsx}, \code{frontend/src/App.tsx}, \code{frontend/src/components/Showcase.tsx} \\
+账号、权限、历史 & \code{src/evidencegraph/accounts.py}, \code{src/evidencegraph/access.py}, \code{src/evidencegraph/conversations.py} \\
+可复现演示与验收 & \code{docs/DEMO_RUNBOOK.md}, \code{docs/PRODUCT_ROADMAP.md} \\
+\bottomrule
+\end{tabularx}
+
+\textbf{最小术语表：} \term{实体/节点}＝图中的研究对象；\term{关系/边}＝两个对象之间带方向的语义；\term{Ontology}＝类型与合法连接规则；\term{证据块}＝保留原文与页码的 PDF 解析片段；\term{Pydantic}＝运行时结构校验；\term{checkpoint}＝可恢复的对话状态；\term{RAG}＝先检索外部资料再给生成模型作答；\term{幂等}＝重复请求不应意外创建多份同一任务/产物；\term{CSRF}＝利用浏览器自动携带登录态发起非本人意愿的修改请求。
+
+\vspace{4mm}\hrule\vspace{3mm}
+{\footnotesize\color{egmuted} 依据：本机 \code{main} 工作区 2026-10-07 的源码、\code{docs/PRODUCT_ROADMAP.md} 与 \code{docs/DEMO_RUNBOOK.md}。代码处于未提交状态；“已通过”的测试与耗时均引用路线图所记的当日/历史验收，不代表本文重新执行。本文无密钥、私人 PDF 原文或用户账号数据。}
+
+\end{document}
