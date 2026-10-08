@@ -58,6 +58,7 @@ export interface BrowserSession {
   identity_enforced: boolean;
   chat_requires_login?: boolean;
   authenticated?: boolean;
+  email_verification_required?: boolean;
 }
 
 export interface EvidenceRef {

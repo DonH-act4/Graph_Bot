@@ -77,6 +77,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--title", required=True)
     parser.add_argument("--base-url", default="http://127.0.0.1:8080")
+    parser.add_argument("--origin", default="http://127.0.0.1:3000")
     parser.add_argument("--model", default="ollama/gpt-oss:20b")
     parser.add_argument("--regenerate", action="store_true", help="Explicitly rebuild a ready graph")
     parser.add_argument("--max-wait", type=float, default=1_200)
@@ -104,7 +105,11 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
     try:
-        with httpx.Client(base_url=args.base_url.rstrip("/"), timeout=300) as client:
+        with httpx.Client(
+            base_url=args.base_url.rstrip("/"),
+            headers={"Origin": args.origin},
+            timeout=300,
+        ) as client:
             configuration = client.get("/papers/configuration")
             configuration.raise_for_status()
             if len(pdf_bytes) > configuration.json()["max_pdf_bytes"]:

@@ -13,6 +13,7 @@ def test_session_reports_server_identity_and_enforcement(test_client, monkeypatc
         "identity_enforced": True,
         "chat_requires_login": False,
         "authenticated": False,
+        "email_verification_required": False,
     }
 
 

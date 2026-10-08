@@ -326,7 +326,12 @@ async def main() -> None:
             agent_url = f"http://{host}:{port}"
         try:
             with st.spinner("Connecting to agent service..."):
-                st.session_state.agent_client = AgentClient(base_url=agent_url)
+                trusted_origin = os.getenv(
+                    "EVIDENCEGRAPH_TRUSTED_ORIGINS", "http://127.0.0.1:3000"
+                ).split(",", 1)[0].strip()
+                st.session_state.agent_client = AgentClient(
+                    base_url=agent_url, origin=trusted_origin
+                )
         except AgentClientError as e:
             st.error(f"Error connecting to agent service at {agent_url}: {e}")
             st.markdown("The service might be booting up. Try again in a few seconds.")

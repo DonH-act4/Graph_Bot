@@ -60,6 +60,7 @@ dependencies = [
     "ddgs>=9.14.4",
     "ag-ui-langgraph~=0.0.42",
     "docling>=2.126.0",
+    "email-validator>=2.3.0",
 ]
 
 # Supply-chain cooldown: resolution only considers releases >=14 days old. Needs the

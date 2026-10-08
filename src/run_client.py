@@ -7,7 +7,10 @@ from schema import ChatMessage
 
 async def amain() -> None:
     #### ASYNC ####
-    client = AgentClient(settings.BASE_URL)
+    client = AgentClient(
+        settings.BASE_URL,
+        origin=settings.EVIDENCEGRAPH_TRUSTED_ORIGINS.split(",", 1)[0].strip(),
+    )
 
     print("Agent info:")
     print(client.info)
@@ -29,7 +32,10 @@ async def amain() -> None:
 
 def main() -> None:
     #### SYNC ####
-    client = AgentClient(settings.BASE_URL)
+    client = AgentClient(
+        settings.BASE_URL,
+        origin=settings.EVIDENCEGRAPH_TRUSTED_ORIGINS.split(",", 1)[0].strip(),
+    )
 
     print("Agent info:")
     print(client.info)

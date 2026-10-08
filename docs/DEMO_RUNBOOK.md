@@ -44,6 +44,8 @@ when the saved sample points to that exact PDF hash.
 - `/app/data/evidencegraph/accounts.sqlite3`: Argon2id password hashes and revocable
   login-session hashes; raw passwords and login tokens are not stored there.
 - `/app/data/evidencegraph/paper-access.sqlite3`: guest and account PDF grants.
+- `/app/data/evidencegraph/request-quotas.sqlite3`: bounded request counters for
+  registration, login, uploads, graph jobs, and chat (created by the new code).
 - `/app/data/evidencegraph/showcase.json`: an index pointing to an existing saved conversation,
   not a hard-coded transcript.
 - `/app/data/evidencegraph/<document-sha256>/`: PDF, parsed source blocks, task state,
@@ -53,9 +55,18 @@ All are in the existing `stage0_sqlite` Compose volume. Routine container replac
 `docker compose ... stop` preserves the volume. **Do not use `down -v`** to stop the demo.
 With `EVIDENCEGRAPH_REQUIRE_LOGIN_FOR_CHAT=true`, a server-issued account ID controls
 private chat and history; the old browser-generated ID is not an authentication credential.
-The current local account implementation is **not** a public multi-user deployment gate:
-CSRF protection, upload/inference quotas, HTTPS Cookie configuration, account recovery,
-and proxy checks still need work.
+The current local account implementation is **not** a public multi-user deployment gate.
+The Mac source now checks unsafe-request Origin/Referer, persists provisional IP/account
+request quotas, and fails startup in public mode when core HTTPS/Cookie/proxy settings are
+missing. These changes have **not** been loaded into the running containers. Account recovery,
+retention/deletion policy, real HTTPS and client-IP checks, PDF parser resource isolation,
+and deployment tests remain open. Open registration was chosen for eventual resume-visitor
+trial; provisional site-wide cost ceilings are 30 uploads and 30 graph requests per day,
+plus 240 chats per hour, and need tuning against target-machine measurements.
+The new source optionally requires emailed verification for self-service registration;
+it is disabled in the current local configuration and has not sent a real email. Existing
+username/password accounts remain usable. No automatic account or paper deletion is planned;
+the owner needs saved data for demonstrations.
 
 ## Generate a reproducible sample
 
@@ -120,9 +131,9 @@ manifests into the repository merely to reproduce a local demo.
   for the stack. Model serving is separate from the API and parsing worker.
 - Parsing/extraction are asynchronous jobs; long documents still take minutes. A failed
   section can fail the whole job after one bounded repair; there is no hidden infinite retry.
-- Local account sign-in, document authorization, and deletion are implemented, but public
-  authentication hardening, quotas, backup restoration drills, and systematic cross-domain
-  quality evaluation remain future work.
+- Local account sign-in, document authorization, and deletion are implemented. The new
+  source has CSRF source checks, provisional quotas, and an isolated backup verification
+  script, but not a verified public deployment or systematic cross-domain quality evaluation.
 
 ## Local account rollout verified on 2026-10-07
 
@@ -136,7 +147,8 @@ manifests into the repository merely to reproduce a local demo.
 - A separate full copy of `/app/data` (including saved PDFs and graph artifacts) is at
   `data/evidencegraph/pre-account-full-20261007T032211Z/` in the Mac checkout
   (Git-ignored, about 21 MiB). This full copy was taken **after** activation; the SQLite
-  online snapshot above was taken **before** activation. Neither has had a restore drill.
+  online snapshot above was taken **before** activation. Both have since passed an isolated
+  copy/integrity/reference check; neither has been restored into a running service.
 - Eight old conversation rows across three browser-selected owner IDs remain in the live
   database and backup. They were **not** automatically assigned to a new account. New
   accounts start with empty private history; older PDF links without an access grant ask

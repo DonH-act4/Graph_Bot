@@ -91,7 +91,7 @@ def test_agent_stream(mock_database_settings, mock_httpx):
     """Test that streaming from our static agent works correctly with token streaming."""
     agent_meta = Agent(description="A static agent.", graph_like=static_agent)
     with patch.dict("agents.agents.agents", {"static-agent": agent_meta}, clear=True):
-        client = AgentClient(agent="static-agent")
+        client = AgentClient(agent="static-agent", origin="http://127.0.0.1:3000")
 
     # Use stream to get intermediate responses
     messages = []

@@ -95,7 +95,11 @@ async def seeded(tmp_path):
             patch("service.service.get_agent", **lookup),
             patch("service.agui.get_agent", **lookup),
         ):
-            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://test",
+                headers={"Origin": "http://127.0.0.1:3000"},
+            ) as client:
                 yield client
 
 

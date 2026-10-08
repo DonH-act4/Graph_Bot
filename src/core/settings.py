@@ -127,6 +127,17 @@ class Settings(BaseSettings):
     SQLITE_DB_PATH: str = "checkpoints.db"
     EVIDENCEGRAPH_DATA_DIR: Path = Path("data/evidencegraph")
     EVIDENCEGRAPH_COOKIE_SECURE: bool = False  # Set true behind public HTTPS.
+    EVIDENCEGRAPH_PUBLIC_MODE: bool = False
+    EVIDENCEGRAPH_EMAIL_VERIFICATION_REQUIRED: bool = False
+    RESEND_API_KEY: SecretStr | None = None
+    RESEND_FROM_EMAIL: str | None = None
+    EVIDENCEGRAPH_TRUSTED_ORIGINS: str = "http://127.0.0.1:3000"
+    EVIDENCEGRAPH_TRUSTED_PROXY_CIDRS: str = ""
+    EVIDENCEGRAPH_QUOTAS_ENABLED: bool = True
+    EVIDENCEGRAPH_GLOBAL_UPLOADS_PER_DAY: int = Field(default=30, ge=1)
+    EVIDENCEGRAPH_GLOBAL_GRAPHS_PER_DAY: int = Field(default=30, ge=1)
+    EVIDENCEGRAPH_GLOBAL_CHATS_PER_HOUR: int = Field(default=240, ge=1)
+    EVIDENCEGRAPH_GLOBAL_VERIFICATION_EMAILS_PER_DAY: int = Field(default=50, ge=1)
     EVIDENCEGRAPH_ENFORCE_SESSION_IDENTITY: bool = False  # Enable after legacy chat migration.
     EVIDENCEGRAPH_REQUIRE_LOGIN_FOR_CHAT: bool = False  # Enable after legacy chat migration.
     EVIDENCEGRAPH_MAX_PDF_BYTES: int = Field(

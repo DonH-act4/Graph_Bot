@@ -8,6 +8,7 @@ import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from secrets import compare_digest
 from uuid import uuid4
 
 from argon2 import PasswordHasher
@@ -15,6 +16,8 @@ from argon2.exceptions import VerificationError, VerifyMismatchError
 
 ACCOUNT_COOKIE = "evidencegraph_account"
 ACCOUNT_LIFETIME = timedelta(days=7)
+EMAIL_VERIFICATION_LIFETIME = timedelta(minutes=20)
+MAX_EMAIL_VERIFICATION_ATTEMPTS = 5
 LOGIN_WINDOW = timedelta(minutes=15)
 MAX_LOGIN_FAILURES = 5
 _hasher = PasswordHasher(time_cost=2, memory_cost=19456, parallelism=1)
@@ -46,7 +49,104 @@ class AccountStore:
             "CREATE TABLE IF NOT EXISTS login_failures ("
             "username TEXT PRIMARY KEY, failure_count INTEGER NOT NULL, first_failure_at TEXT NOT NULL)"
         )
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS account_emails ("
+            "account_id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, verified_at TEXT NOT NULL)"
+        )
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS pending_registrations ("
+            "username TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, "
+            "code_hash TEXT NOT NULL, expires_at TEXT NOT NULL, attempts INTEGER NOT NULL)"
+        )
         return connection
+
+    def begin_email_registration(self, username: str, email: str, password: str) -> str | None:
+        """Reserve a new identity and return a high-entropy, short-lived email code."""
+        normalized = username.casefold()
+        password_hash = _hasher.hash(password)
+        code = secrets.token_urlsafe(18)
+        now = datetime.now(UTC)
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "DELETE FROM pending_registrations WHERE expires_at <= ?", (now.isoformat(),)
+            )
+            if connection.execute(
+                "SELECT 1 FROM accounts WHERE username = ?", (normalized,)
+            ).fetchone() or connection.execute(
+                "SELECT 1 FROM account_emails WHERE email = ?", (email,)
+            ).fetchone():
+                return None
+            # A retry with the same username/email replaces its previous, now invalid code.
+            connection.execute(
+                "DELETE FROM pending_registrations WHERE username = ? AND email = ?",
+                (normalized, email),
+            )
+            try:
+                connection.execute(
+                    "INSERT INTO pending_registrations VALUES (?, ?, ?, ?, ?, 0)",
+                    (
+                        normalized,
+                        email,
+                        password_hash,
+                        hashlib.sha256(code.encode()).hexdigest(),
+                        (now + EMAIL_VERIFICATION_LIFETIME).isoformat(),
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                return None
+        return code
+
+    def discard_email_registration(self, username: str, code: str) -> None:
+        """Release only the pending code whose delivery failed."""
+        with closing(self._connect()) as connection, connection:
+            connection.execute(
+                "DELETE FROM pending_registrations WHERE username = ? AND code_hash = ?",
+                (username.casefold(), hashlib.sha256(code.encode()).hexdigest()),
+            )
+
+    def complete_email_registration(self, username: str, code: str) -> str | None:
+        """Verify once, then create an account and bind its verified email atomically."""
+        normalized = username.casefold()
+        now = datetime.now(UTC)
+        try:
+            with closing(self._connect()) as connection, connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT email, password_hash, code_hash, expires_at, attempts "
+                    "FROM pending_registrations WHERE username = ?",
+                    (normalized,),
+                ).fetchone()
+                if row is None:
+                    return None
+                email, password_hash, code_hash, expires_at, attempts = row
+                if expires_at <= now.isoformat() or attempts >= MAX_EMAIL_VERIFICATION_ATTEMPTS:
+                    connection.execute(
+                        "DELETE FROM pending_registrations WHERE username = ?", (normalized,)
+                    )
+                    return None
+                if not compare_digest(code_hash, hashlib.sha256(code.encode()).hexdigest()):
+                    connection.execute(
+                        "UPDATE pending_registrations SET attempts = attempts + 1 WHERE username = ?",
+                        (normalized,),
+                    )
+                    return None
+                account_id = str(uuid4())
+                connection.execute(
+                    "INSERT INTO accounts(account_id, username, password_hash, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (account_id, normalized, password_hash, now.isoformat()),
+                )
+                connection.execute(
+                    "INSERT INTO account_emails(account_id, email, verified_at) VALUES (?, ?, ?)",
+                    (account_id, email, now.isoformat()),
+                )
+                connection.execute(
+                    "DELETE FROM pending_registrations WHERE username = ?", (normalized,)
+                )
+                return account_id
+        except sqlite3.IntegrityError:
+            return None
 
     def register(self, username: str, password: str) -> str | None:
         normalized = username.casefold()

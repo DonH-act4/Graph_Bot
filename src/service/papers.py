@@ -30,12 +30,13 @@ from evidencegraph.papers import (
     PaperStore,
     RelationReviewRequest,
 )
+from evidencegraph.quotas import QuotaStore
 from schema.models import GoogleModelName
-from service.auth import get_optional_account
+from service.auth import get_optional_account, get_paper_access_store
+from service.quotas import enforce_quota, get_quota_store
 
 router = APIRouter(prefix="/papers", tags=["papers"])
 _store = PaperStore(settings.EVIDENCEGRAPH_DATA_DIR)
-_access_store = PaperAccessStore(settings.EVIDENCEGRAPH_DATA_DIR)
 
 
 class PaperConfiguration(BaseModel):
@@ -54,10 +55,6 @@ class GraphRequest(BaseModel):
 
 def get_paper_store() -> PaperStore:
     return _store
-
-
-def get_paper_access_store() -> PaperAccessStore:
-    return _access_store
 
 
 def get_guest_identity(
@@ -80,7 +77,6 @@ def get_guest_identity(
             path="/",
         )
     if settings.EVIDENCEGRAPH_REQUIRE_LOGIN_FOR_CHAT and account_id is not None:
-        access.transfer_grants(guest_id, account_id)
         return account_id
     return guest_id
 
@@ -174,7 +170,10 @@ async def upload_paper(
     store: Annotated[PaperStore, Depends(get_paper_store)],
     guest_id: Annotated[str, Depends(get_guest_identity)],
     access: Annotated[PaperAccessStore, Depends(get_paper_access_store)],
+    account_id: Annotated[str | None, Depends(get_optional_account)],
+    quotas: Annotated[QuotaStore, Depends(get_quota_store)],
 ) -> PaperRecord:
+    await run_in_threadpool(enforce_quota, request, quotas, "upload", account_id)
     if request.headers.get("content-type", "").split(";", 1)[0].strip() != "application/pdf":
         raise HTTPException(status_code=415, detail="Send a raw application/pdf request body")
     max_bytes = settings.EVIDENCEGRAPH_MAX_PDF_BYTES
@@ -277,12 +276,16 @@ def get_paper_source(
 )
 def request_paper_graph(
     document_id: str,
+    http_request: Request,
     store: Annotated[PaperStore, Depends(get_paper_store)],
     _authorized: Annotated[None, Depends(require_paper_owner)],
+    account_id: Annotated[str | None, Depends(get_optional_account)],
+    quotas: Annotated[QuotaStore, Depends(get_quota_store)],
     extraction_configured: Annotated[bool, Depends(graph_extraction_is_configured)],
     models: Annotated[tuple[str, ...], Depends(get_graph_model_catalog)],
     request: Annotated[GraphRequest | None, Body()] = None,
 ) -> GraphRecord:
+    enforce_quota(http_request, quotas, "graph", account_id)
     if not extraction_configured:
         raise HTTPException(
             status_code=503,
@@ -307,12 +310,16 @@ def request_paper_graph(
 )
 def rebuild_paper_graph(
     document_id: str,
+    http_request: Request,
     store: Annotated[PaperStore, Depends(get_paper_store)],
     _authorized: Annotated[None, Depends(require_paper_owner)],
+    account_id: Annotated[str | None, Depends(get_optional_account)],
+    quotas: Annotated[QuotaStore, Depends(get_quota_store)],
     extraction_configured: Annotated[bool, Depends(graph_extraction_is_configured)],
     models: Annotated[tuple[str, ...], Depends(get_graph_model_catalog)],
     request: Annotated[GraphRequest | None, Body()] = None,
 ) -> GraphRecord:
+    enforce_quota(http_request, quotas, "graph", account_id)
     if not extraction_configured:
         raise HTTPException(
             status_code=503,

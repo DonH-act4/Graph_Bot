@@ -4,6 +4,19 @@ from unittest.mock import patch
 
 import pytest
 
+from core import settings
+
+
+@pytest.fixture(autouse=True)
+def isolate_browser_security_settings(monkeypatch):
+    """Keep local demo .env switches from changing unrelated test expectations."""
+    monkeypatch.setattr(settings, "EVIDENCEGRAPH_REQUIRE_LOGIN_FOR_CHAT", False)
+    monkeypatch.setattr(settings, "EVIDENCEGRAPH_ENFORCE_SESSION_IDENTITY", False)
+    monkeypatch.setattr(settings, "EVIDENCEGRAPH_TRUSTED_ORIGINS", "http://127.0.0.1:3000")
+    monkeypatch.setattr(settings, "EVIDENCEGRAPH_QUOTAS_ENABLED", False)
+    monkeypatch.setattr(settings, "EVIDENCEGRAPH_PUBLIC_MODE", False)
+    monkeypatch.setattr(settings, "EVIDENCEGRAPH_EMAIL_VERIFICATION_REQUIRED", False)
+
 
 def pytest_addoption(parser):
     parser.addoption(

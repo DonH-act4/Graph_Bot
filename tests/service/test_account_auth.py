@@ -21,6 +21,7 @@ def test_register_login_logout_and_guest_chat_gate(
             "identity_enforced": True,
             "chat_requires_login": True,
             "authenticated": False,
+            "email_verification_required": False,
         }
         assert test_client.get("/papers/configuration").status_code == 200
         assert test_client.get("/papers/" + "a" * 64).status_code != 401
@@ -128,9 +129,12 @@ def test_registration_transfers_browser_papers_to_account(
         )
         assert registered.status_code == 201
         account_id = registered.json()["user_id"]
-        assert test_client.get("/session").json()["user_id"] == account_id
         assert access.owns(account_id, document_id)
         assert not access.owns(guest_id, document_id)
+        access.grant(guest_id, "d" * 64)
+        assert test_client.get("/session").json()["user_id"] == account_id
+        assert access.owns(guest_id, "d" * 64)
+        assert not access.owns(account_id, "d" * 64)
         assert test_client.post("/auth/logout").status_code == 204
         assert test_client.get("/session").json()["user_id"] == guest_id
         assert not access.can_read(guest_id, document_id)

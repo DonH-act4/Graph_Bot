@@ -222,7 +222,9 @@ async def test_delete_cancels_active_chat_request(
 
     mock_agent.ainvoke.side_effect = slow_answer
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Origin": "http://127.0.0.1:3000"},
     ) as client:
         pending = asyncio.create_task(client.post(
             "/invoke", json={"thread_id": "active", "user_id": "owner", "message": "Wait"}
@@ -291,7 +293,9 @@ async def test_real_checkpoints_and_workspace_survive_database_reopen(
         agent = builder.compile(checkpointer=saver)
         with patch("service.service.get_agent", return_value=agent):
             async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test",
+                headers={"Origin": "http://127.0.0.1:3000"},
             ) as client:
                 response = await client.post(
                     "/invoke",
@@ -307,7 +311,9 @@ async def test_real_checkpoints_and_workspace_survive_database_reopen(
         agent = builder.compile(checkpointer=reopened)
         with patch("service.service.get_agent", return_value=agent):
             async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test",
+                headers={"Origin": "http://127.0.0.1:3000"},
             ) as client:
                 history = await client.post(
                     "/history", json={"thread_id": "persisted", "user_id": "user"}

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { deleteConversation, getPaperConfiguration, getSession, rebuildGraph, requestGraph } from "./api";
+import { deleteConversation, getPaperConfiguration, getSession, rebuildGraph, requestGraph, uploadPaper } from "./api";
 
 const documentId = "a".repeat(64);
 
@@ -9,6 +9,17 @@ afterEach(() => {
 });
 
 describe("paper configuration and graph model requests", () => {
+  it("keeps the server's retry guidance when an upload is limited", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ detail: "Too many upload requests; try again after 30 seconds" }),
+      { status: 429, headers: { "Content-Type": "application/json", "Retry-After": "30" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(uploadPaper(new File(["pdf"], "paper.pdf"))).rejects.toMatchObject({
+      status: 429,
+      message: "Too many upload requests; try again after 30 seconds",
+    });
+  });
   it("loads the server-issued browser session", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       user_id: "server-guest", identity_enforced: true,

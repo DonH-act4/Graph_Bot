@@ -222,6 +222,7 @@ class AgentClient:
         agent: str | None = None,
         timeout: float | None = None,
         get_info: bool = True,
+        origin: str | None = None,
     ) -> None:
         """
         Initialize the client.
@@ -232,9 +233,11 @@ class AgentClient:
             timeout (float, optional): The timeout for requests.
             get_info (bool, optional): Whether to fetch agent information on init.
                 Default: True
+            origin (str, optional): Trusted site origin required by CSRF-protected servers.
         """
         self.base_url = base_url
         self.auth_secret = os.getenv("AUTH_SECRET")
+        self.origin = origin
         self.timeout = timeout
         self.info: ServiceMetadata | None = None
         self.agent: str | None = None
@@ -248,6 +251,8 @@ class AgentClient:
         headers = {}
         if self.auth_secret:
             headers["Authorization"] = f"Bearer {self.auth_secret}"
+        if self.origin:
+            headers["Origin"] = self.origin
         return headers
 
     def retrieve_info(self) -> None:

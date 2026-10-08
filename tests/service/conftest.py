@@ -40,7 +40,7 @@ def isolated_test_paper_access(tmp_path):
 @pytest.fixture
 def test_client():
     """Fixture to create a FastAPI test client."""
-    return TestClient(app)
+    return TestClient(app, headers={"Origin": "http://127.0.0.1:3000"})
 
 
 @pytest.fixture

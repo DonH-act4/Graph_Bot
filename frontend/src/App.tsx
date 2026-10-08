@@ -169,9 +169,9 @@ function readPendingAuth(): { documentId: string | null; question: string; block
   }
 }
 
-function WorkspaceApp({ userId, identityEnforced, canChat, authEnabled, authenticated, onAuthChanged }: {
+function WorkspaceApp({ userId, identityEnforced, canChat, authEnabled, authenticated, emailVerificationRequired, onAuthChanged }: {
   userId: string; identityEnforced: boolean; canChat: boolean; authEnabled: boolean;
-  authenticated: boolean; onAuthChanged: () => void;
+  authenticated: boolean; emailVerificationRequired: boolean; onAuthChanged: () => void;
 }) {
   const [threadId, setThreadId] = useState(() => threadFromSession(userId, identityEnforced));
   const [documentId, setDocumentId] = useState<string | null>(() =>
@@ -1014,7 +1014,7 @@ function WorkspaceApp({ userId, identityEnforced, canChat, authEnabled, authenti
         }}
       />
 
-      {authOpen && <AuthDialog onClose={() => setAuthOpen(false)} onSuccess={onAuthSuccess} />}
+      {authOpen && <AuthDialog emailVerificationRequired={emailVerificationRequired} onClose={() => setAuthOpen(false)} onSuccess={onAuthSuccess} />}
       {graph && (
         <Suspense fallback={graphOpen ? <div className="graph-loading">Opening graph…</div> : null}>
           <GraphWorkspace
@@ -1066,5 +1066,6 @@ export default function App() {
   const authEnabled = Boolean(session.chat_requires_login);
   const authenticated = Boolean(session.authenticated);
   return <WorkspaceApp key={`${userId}:${session.identity_enforced}`} userId={userId} identityEnforced={session.identity_enforced}
-    canChat={!authEnabled || authenticated} authEnabled={authEnabled} authenticated={authenticated} onAuthChanged={loadSession} />;
+    canChat={!authEnabled || authenticated} authEnabled={authEnabled} authenticated={authenticated}
+    emailVerificationRequired={Boolean(session.email_verification_required)} onAuthChanged={loadSession} />;
 }

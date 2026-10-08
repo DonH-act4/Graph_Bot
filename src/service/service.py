@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -36,6 +36,7 @@ from core import settings
 from evidencegraph.access import PaperAccessStore
 from evidencegraph.conversations import ConversationStore, merge_thread_summaries
 from evidencegraph.papers import PaperStore
+from evidencegraph.quotas import QuotaStore
 from evidencegraph.retrieval import is_contextual_followup, retrieve_paper_blocks
 from memory import initialize_database, initialize_store
 from schema import (
@@ -56,9 +57,12 @@ from service.auth import get_optional_account
 from service.auth import router as auth_router
 from service.conversations import get_conversation_store, record_chat_workspace
 from service.conversations import router as conversations_router
+from service.csrf import verify_csrf
 from service.identity import assert_session_owner, get_chat_identity, strict_identity_enabled
 from service.papers import get_guest_identity, get_paper_access_store, get_paper_store
 from service.papers import router as papers_router
+from service.public_config import validate_public_configuration
+from service.quotas import enforce_quota, get_quota_store
 from service.threads import list_user_threads
 from service.utils import (
     convert_message_content_to_string,
@@ -190,6 +194,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     Configurable lifespan that initializes the appropriate database checkpointer, store,
     and agents with async loading - for example for starting up MCP clients.
     """
+    validate_public_configuration()
     try:
         # Initialize both checkpointer (for short-term memory) and store (for long-term memory)
         async with initialize_database() as saver, initialize_store() as store:
@@ -228,7 +233,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(lifespan=lifespan, generate_unique_id_function=custom_generate_unique_id)
-router = APIRouter(dependencies=[Depends(verify_bearer)])
+router = APIRouter(dependencies=[Depends(verify_bearer), Depends(verify_csrf)])
 # AG-UI protocol endpoints inherit the same bearer auth - see service/agui.py
 router.include_router(agui_router)
 router.include_router(auth_router)
@@ -259,6 +264,7 @@ def session(
         "identity_enforced": strict_identity_enabled(),
         "chat_requires_login": settings.EVIDENCEGRAPH_REQUIRE_LOGIN_FOR_CHAT,
         "authenticated": account_id is not None,
+        "email_verification_required": settings.EVIDENCEGRAPH_EMAIL_VERIFICATION_REQUIRED,
     }
 
 
@@ -413,11 +419,14 @@ def _resolve_evidence_context(
 @router.post("/invoke")
 async def invoke(
     user_input: UserInput,
+    request: Request,
     store: Annotated[PaperStore, Depends(get_paper_store)],
     conversations: Annotated[ConversationStore, Depends(get_conversation_store)],
     guest_id: Annotated[str, Depends(get_guest_identity)],
     chat_identity: Annotated[str | None, Depends(get_chat_identity)],
     access: Annotated[PaperAccessStore, Depends(get_paper_access_store)],
+    account_id: Annotated[str | None, Depends(get_optional_account)],
+    quotas: Annotated[QuotaStore, Depends(get_quota_store)],
     agent_id: str = DEFAULT_AGENT,
 ) -> ChatMessage:
     """
@@ -435,6 +444,7 @@ async def invoke(
     # in that case.
     await _require_chat_thread_owner(user_input, agent_id, conversations, chat_identity)
     _require_chat_paper_access(user_input, guest_id, access)
+    await run_in_threadpool(enforce_quota, request, quotas, "chat", account_id)
     agent: AgentGraph = get_agent(agent_id)
     evidence_context = await run_in_threadpool(
         _resolve_evidence_context,
@@ -625,11 +635,14 @@ def _sse_response_example() -> dict[int | str, Any]:
 @router.post("/stream", response_class=StreamingResponse, responses=_sse_response_example())
 async def stream(
     user_input: StreamInput,
+    request: Request,
     store: Annotated[PaperStore, Depends(get_paper_store)],
     conversations: Annotated[ConversationStore, Depends(get_conversation_store)],
     guest_id: Annotated[str, Depends(get_guest_identity)],
     chat_identity: Annotated[str | None, Depends(get_chat_identity)],
     access: Annotated[PaperAccessStore, Depends(get_paper_access_store)],
+    account_id: Annotated[str | None, Depends(get_optional_account)],
+    quotas: Annotated[QuotaStore, Depends(get_quota_store)],
     agent_id: str = DEFAULT_AGENT,
 ) -> StreamingResponse:
     """
@@ -644,6 +657,7 @@ async def stream(
     """
     await _require_chat_thread_owner(user_input, agent_id, conversations, chat_identity)
     _require_chat_paper_access(user_input, guest_id, access)
+    await run_in_threadpool(enforce_quota, request, quotas, "chat", account_id)
     evidence_context = await run_in_threadpool(
         _resolve_evidence_context,
         user_input.evidence_context,

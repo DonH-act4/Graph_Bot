@@ -104,7 +104,11 @@ async def checkpointer(request, tmp_path):
 async def client_for(agents: dict[str, Any]) -> AsyncGenerator[httpx.AsyncClient, None]:
     transport = httpx.ASGITransport(app=app)
     with patch("service.service.get_agent", side_effect=lambda agent_id: agents[agent_id]):
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"Origin": "http://127.0.0.1:3000"},
+        ) as client:
             yield client
 
 

@@ -65,6 +65,22 @@ export function authenticate(mode: "login" | "register", username: string, passw
   });
 }
 
+export function beginEmailRegistration(username: string, email: string, password: string): Promise<{ status: "verification_required" }> {
+  return request("/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, email, password }),
+  });
+}
+
+export function verifyEmailRegistration(username: string, code: string): Promise<{ user_id: string }> {
+  return request("/auth/verify-email", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, code }),
+  });
+}
+
 export function logout(): Promise<void> {
   return request("/auth/logout", { method: "POST" });
 }

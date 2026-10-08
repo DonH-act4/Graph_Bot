@@ -109,7 +109,7 @@ def client(tmp_path: Path):
         "other-graph-model",
     )
     try:
-        yield TestClient(app), store
+        yield TestClient(app, headers={"Origin": "http://127.0.0.1:3000"}), store
     finally:
         app.dependency_overrides.clear()
 
@@ -207,7 +207,7 @@ def test_guest_paper_access_requires_own_upload(client):
     cookie = uploaded.headers["set-cookie"].lower()
     assert "httponly" in cookie and "samesite=lax" in cookie
 
-    with TestClient(app) as stranger:
+    with TestClient(app, headers={"Origin": "http://127.0.0.1:3000"}) as stranger:
         assert stranger.get(f"/papers/{PDF_ID}").status_code == 404
         assert stranger.get(f"/papers/{PDF_ID}/source").status_code == 404
         assert stranger.get(f"/papers/{PDF_ID}/graph").status_code == 404
@@ -227,7 +227,7 @@ def test_published_tutorial_is_readable_but_not_mutable(client):
     conversations.save("tutorial", ConversationUpdate(user_id="author", document_id=PDF_ID))
     conversations.publish_showcase("tutorial", "author", "Tutorial", "Example", "test")
 
-    with TestClient(app) as visitor:
+    with TestClient(app, headers={"Origin": "http://127.0.0.1:3000"}) as visitor:
         assert visitor.get(f"/papers/{PDF_ID}").status_code == 200
         assert visitor.get(f"/papers/{PDF_ID}/source").status_code == 200
         assert visitor.post(f"/papers/{PDF_ID}/graph").status_code == 404
