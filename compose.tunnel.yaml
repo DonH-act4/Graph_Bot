@@ -1,0 +1,18 @@
+# Ubuntu public edge: combine with compose.stage0.yaml using -f for this host.
+# Keep the tunnel token outside the repository and out of process arguments.
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:2026.9.1
+    user: "1000:1000"
+    restart: unless-stopped
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+      - --token-file
+      - /run/secrets/tunnel-token
+    volumes:
+      - /home/hyele/.config/evidencegraph/tunnel-token:/run/secrets/tunnel-token:ro
+    depends_on:
+      web_app:
+        condition: service_started

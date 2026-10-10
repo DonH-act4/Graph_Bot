@@ -1,6 +1,43 @@
-# EvidenceGraph local portfolio demo
+# EvidenceGraph portfolio demo
 
-## Current Ubuntu status (2026-10-09)
+## Public Ubuntu status (2026-10-10)
+
+The owner explicitly approved a public trial at `https://evidence.donquiry.com` before
+company-LAN isolation is complete. This is not acceptance of every release gate.
+Cloudflare Tunnel `evidencegraph-ubuntu` has one healthy replica and routes
+`evidence.donquiry.com` to `http://web_app:80`; Cloudflare created a DNS CNAME.
+Safari loaded the guest workspace over HTTPS without a certificate warning,
+and `/api/health` returned `{"status":"ok"}` through the public hostname.
+Unauthenticated public GETs to `/api/admin/summary` and `/api/admin/accounts`
+returned HTTP 401; no admin data was returned.
+Public login, email delivery, upload, graph, chat, and admin flows were not
+replayed during this deployment.
+
+The connector in `compose.tunnel.yaml` reads a rotated token from
+`/home/hyele/.config/evidencegraph/tunnel-token` (mode 600, outside Git).
+Never paste the token into a shell command, chat, ticket, or repository.
+The private `.env` enables public mode, secure cookies, the exact HTTPS origin,
+and trusts only frontend Docker IP `172.18.0.3/32` for forwarded visitor IP.
+The API was recreated and is healthy; the worker and data volume were not
+recreated. Frontend and API host ports remain bound to `127.0.0.1`.
+Browser login must use the HTTPS public origin because cookies are Secure.
+
+Known open risk: Ubuntu can still reach other company-LAN servers until the
+ESXi/network rules are reviewed in person. The owner accepted this temporary
+risk to publish now, with isolation planned for Monday. Tunnel does not
+restrict outbound LAN traffic from a compromised application. There is no
+separate Cloudflare Access gate on the public site. Account recovery, data
+retention/manual deletion, resource limits, and end-to-end public workflows
+also remain open.
+
+To remove public reachability, first remove or disable the published route in
+Cloudflare. Stop only the connector with
+`docker compose -p evidencegraph-ubuntu -f compose.stage0.yaml -f compose.tunnel.yaml stop cloudflared`;
+this preserves named volumes. Never use `down -v` as a routine stop.
+The pre-public `.env` backup is at
+`/home/hyele/.config/evidencegraph/env.before-public-2026-10-10`.
+
+## Historical Ubuntu status (2026-10-09)
 
 The older macOS snapshots below are historical. The current Ubuntu deployment is
 reachable from the Mac through a loopback SSH forward at `http://127.0.0.1:13000/`.

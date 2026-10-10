@@ -1149,3 +1149,20 @@ uv run pyrefly check
   前端生产构建通过。Ubuntu 部署前使用 SQLite 在线备份账号库并通过完整性检查；
   随后仅重建后端和前端容器，后端恢复 healthy，worker 未重建。部署后账号数
   保持 2，封禁和审计记录均为 0。浏览器界面的人工验收仍待用户完成。
+
+#### 2026-10-10 Ubuntu 公网试运行（用户明确接受隔离延期）
+
+- 用户在了解 ESXi/公司内网横向访问风险后，明确确认今天公开
+  `evidence.donquiry.com`；这不代表网络隔离或全部发布门槛已通过。
+- 旧 Tunnel token 在聊天中暴露后由用户轮换。新 token 仅存于 Ubuntu 仓库外
+  的权限 600 文件，Compose 通过只读挂载和 `--token-file` 启动连接器。
+- Cloudflare 显示 Tunnel Healthy、1 个活动副本；已建立公开应用路由并自动
+  创建 CNAME。Safari 通过 HTTPS 加载访客首页，公网 `/api/health` 返回
+  `{"status":"ok"}`；API 容器 healthy，worker 与数据卷未重建。
+- Ubuntu 私有 `.env` 已启用公网模式、Secure Cookie、精确 HTTPS 来源和
+  单一 Nginx 容器 IP 的代理信任。前端/API 宿主端口仍只绑定回环地址。
+- 上线前 Ubuntu 隔离测试：Python 482 通过、4 跳过，Ruff 通过、Pyrefly
+  0 错误；Nginx 与 Compose 配置检查通过。未在公网重演登录、发信、上传、
+  图谱、问答和管理流程，需用户继续手工验收。
+- 公司内网横向隔离仍未完成，计划周一现场处理；账号恢复、数据手工删除、
+  资源告警/容量和必要的管理入口额外保护也未完成。见 `docs/DEMO_RUNBOOK.md`。
