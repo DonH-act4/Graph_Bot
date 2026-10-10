@@ -23,6 +23,7 @@ import {
 } from "./api";
 import { Composer } from "./components/Composer";
 import { AuthDialog } from "./components/AuthDialog";
+import { AdminDashboard } from "./components/AdminDashboard";
 import { Showcase } from "./components/Showcase";
 import { historyAttachments, readableCitations, toAttachment } from "./lib/evidence";
 import type {
@@ -169,9 +170,9 @@ function readPendingAuth(): { documentId: string | null; question: string; block
   }
 }
 
-function WorkspaceApp({ userId, identityEnforced, canChat, authEnabled, authenticated, emailVerificationRequired, onAuthChanged }: {
+function WorkspaceApp({ userId, identityEnforced, canChat, authEnabled, authenticated, isAdmin, emailVerificationRequired, onAuthChanged }: {
   userId: string; identityEnforced: boolean; canChat: boolean; authEnabled: boolean;
-  authenticated: boolean; emailVerificationRequired: boolean; onAuthChanged: () => void;
+  authenticated: boolean; isAdmin: boolean; emailVerificationRequired: boolean; onAuthChanged: () => void;
 }) {
   const [threadId, setThreadId] = useState(() => threadFromSession(userId, identityEnforced));
   const [documentId, setDocumentId] = useState<string | null>(() =>
@@ -820,6 +821,7 @@ function WorkspaceApp({ userId, identityEnforced, canChat, authEnabled, authenti
         </nav>
 
         {authEnabled && <div className="account-control">
+          {isAdmin && <a className="admin-nav-link" href="/?view=admin">Operations dashboard <span>↗</span></a>}
           {authenticated ? <button onClick={() => void logout().then(onAuthChanged).catch((error) => setAppError({ title: "Sign out failed", detail: error instanceof Error ? error.message : "Please try again." }))}>Sign out</button>
             : <button onClick={() => setAuthOpen(true)}>Sign in to ask questions <span>→</span></button>}
         </div>}
@@ -1049,7 +1051,7 @@ function WorkspaceApp({ userId, identityEnforced, canChat, authEnabled, authenti
   );
 }
 
-export default function App() {
+function WorkspaceRoot() {
   const [session, setSession] = useState<BrowserSession | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const loadSession = useCallback(() => {
@@ -1066,6 +1068,12 @@ export default function App() {
   const authEnabled = Boolean(session.chat_requires_login);
   const authenticated = Boolean(session.authenticated);
   return <WorkspaceApp key={`${userId}:${session.identity_enforced}`} userId={userId} identityEnforced={session.identity_enforced}
-    canChat={!authEnabled || authenticated} authEnabled={authEnabled} authenticated={authenticated}
+    canChat={!authEnabled || authenticated} authEnabled={authEnabled} authenticated={authenticated} isAdmin={Boolean(session.is_admin)}
     emailVerificationRequired={Boolean(session.email_verification_required)} onAuthChanged={loadSession} />;
+}
+
+export default function App() {
+  return new URLSearchParams(window.location.search).get("view") === "admin"
+    ? <AdminDashboard />
+    : <WorkspaceRoot />;
 }

@@ -2,6 +2,7 @@ from enum import StrEnum
 from json import loads
 from pathlib import Path
 from typing import Annotated, Any
+from uuid import UUID
 
 from dotenv import find_dotenv
 from pydantic import (
@@ -128,6 +129,7 @@ class Settings(BaseSettings):
     EVIDENCEGRAPH_DATA_DIR: Path = Path("data/evidencegraph")
     EVIDENCEGRAPH_COOKIE_SECURE: bool = False  # Set true behind public HTTPS.
     EVIDENCEGRAPH_PUBLIC_MODE: bool = False
+    EVIDENCEGRAPH_ADMIN_ACCOUNT_ID: UUID | None = None
     EVIDENCEGRAPH_EMAIL_VERIFICATION_REQUIRED: bool = False
     RESEND_API_KEY: SecretStr | None = None
     RESEND_FROM_EMAIL: str | None = None

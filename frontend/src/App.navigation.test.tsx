@@ -77,6 +77,16 @@ beforeEach(() => {
 });
 
 describe("same-paper conversation navigation and grounded chat", () => {
+  it("shows the operations link only for the server-designated admin account", async () => {
+    window.history.replaceState(null, "", "/");
+    vi.mocked(api.getSession).mockResolvedValue({
+      user_id: "owner", identity_enforced: true, authenticated: true,
+      chat_requires_login: true, is_admin: true,
+    });
+    render(<App />);
+    expect(await screen.findByRole("link", { name: /Operations dashboard/ })).toHaveAttribute("href", "/?view=admin");
+  });
+
   it("keeps a draft but does not call a model without an attached parsed paper", async () => {
     window.history.replaceState(null, "", "?user_id=personal-user&thread_id=personal-thread");
     vi.mocked(api.getHistory).mockResolvedValue({

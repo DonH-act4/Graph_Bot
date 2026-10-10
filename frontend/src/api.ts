@@ -12,6 +12,8 @@ import type {
   BrowserSession,
   ShowcaseRecord,
   ThreadList,
+  AdminSummary,
+  ManagedAccountsResponse,
 } from "./types";
 
 const API_ROOT = "/api";
@@ -55,6 +57,20 @@ export function getPaperConfiguration(): Promise<PaperConfiguration> {
 
 export function getSession(): Promise<BrowserSession> {
   return request("/session");
+}
+
+export function getAdminSummary(): Promise<AdminSummary> {
+  return request("/admin/summary");
+}
+
+export function getManagedAccounts(): Promise<ManagedAccountsResponse> {
+  return request("/admin/accounts");
+}
+
+export function setAccountBan(accountId: string, banned: boolean, reason = ""): Promise<void> {
+  return request(`/admin/accounts/${encodeURIComponent(accountId)}/ban`, banned
+    ? { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason }) }
+    : { method: "DELETE" });
 }
 
 export function authenticate(mode: "login" | "register", username: string, password: string): Promise<{ user_id: string }> {

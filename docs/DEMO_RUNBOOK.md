@@ -1,5 +1,42 @@
 # EvidenceGraph local portfolio demo
 
+## Current Ubuntu status (2026-10-09)
+
+The older macOS snapshots below are historical. The current Ubuntu deployment is
+reachable from the Mac through a loopback SSH forward at `http://127.0.0.1:13000/`.
+The backend was recreated with email verification enabled and returned a healthy
+status. The owner reported receiving a real verification email and completing a
+new account registration; this is a manual report, not an independently replayed
+mail-delivery test. The site is still private (`EVIDENCEGRAPH_PUBLIC_MODE=false`).
+
+The owner-only operations summary is deployed at
+`http://127.0.0.1:13000/?view=admin` through the Mac SSH forward. The Ubuntu
+container loads the existing `don` account UUID from its private `.env`;
+leaving `EVIDENCEGRAPH_ADMIN_ACCOUNT_ID` empty would deny everyone. The backend
+is healthy and unauthenticated access returned 401. The owner supplied a browser
+screenshot of the authorized summary. Counts are aggregate
+quota-accepted requests, not unique visitors or completed jobs. Keep the admin
+route private and add a separate Cloudflare Access gate before publishing the
+site.
+
+The deployed management slice adds a direct owner sign-in form on `?view=admin`,
+per-account horizontal usage bars, and reversible ban/unban controls. Usage bars
+read only the current UTC quota windows: upload and graph requests today, chat
+requests this hour. They exclude successful-job status, historical trends, and
+visitor identity; guest requests and accounts outside the latest 100 appear only
+in the unattributed remainder. The list shows usernames and verification status,
+not email addresses or research content. Ban revokes all existing account sessions
+and prevents account login; unban permits a fresh login without restoring old
+sessions. Saved documents and conversations remain. This does not prevent guest
+access, a new account, or work already in flight. Do not test ban on a real user
+without consent; automated tests use temporary databases.
+The Ubuntu account database was backed up online before deployment to
+`/app/data/evidencegraph/backups/accounts-pre-moderation-20261009T104145009781Z.sqlite3`
+and its integrity check returned `ok`. After deployment, backend health was
+`healthy`, the web container was running, and the worker was not recreated.
+The account count remained 2; ban and moderation-event counts were both 0.
+The owner must still visually verify the new page in their own browser.
+
 ## Scope
 
 This is a single-paper research demo, not a production multi-user service. The normal

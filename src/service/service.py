@@ -52,6 +52,7 @@ from schema import (
     UserThreads,
     UserThreadsInput,
 )
+from service.admin import router as admin_router
 from service.agui import router as agui_router
 from service.auth import get_optional_account
 from service.auth import router as auth_router
@@ -236,6 +237,7 @@ app = FastAPI(lifespan=lifespan, generate_unique_id_function=custom_generate_uni
 router = APIRouter(dependencies=[Depends(verify_bearer), Depends(verify_csrf)])
 # AG-UI protocol endpoints inherit the same bearer auth - see service/agui.py
 router.include_router(agui_router)
+router.include_router(admin_router)
 router.include_router(auth_router)
 router.include_router(papers_router)
 router.include_router(conversations_router)
@@ -264,6 +266,9 @@ def session(
         "identity_enforced": strict_identity_enabled(),
         "chat_requires_login": settings.EVIDENCEGRAPH_REQUIRE_LOGIN_FOR_CHAT,
         "authenticated": account_id is not None,
+        "is_admin": account_id is not None
+        and settings.EVIDENCEGRAPH_ADMIN_ACCOUNT_ID is not None
+        and account_id == str(settings.EVIDENCEGRAPH_ADMIN_ACCOUNT_ID),
         "email_verification_required": settings.EVIDENCEGRAPH_EMAIL_VERIFICATION_REQUIRED,
     }
 

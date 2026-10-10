@@ -6,6 +6,7 @@ import hashlib
 import secrets
 import sqlite3
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from secrets import compare_digest
@@ -23,6 +24,15 @@ MAX_LOGIN_FAILURES = 5
 _hasher = PasswordHasher(time_cost=2, memory_cost=19456, parallelism=1)
 # Verify an unknown username against a real hash to avoid a cheap account-existence timing signal.
 _dummy_hash = _hasher.hash("evidencegraph-invalid-account-password")
+
+
+@dataclass(frozen=True)
+class ManagedAccount:
+    account_id: str
+    username: str
+    created_at: str
+    email_verified: bool
+    banned: bool
 
 
 class AccountStore:
@@ -58,7 +68,78 @@ class AccountStore:
             "username TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, "
             "code_hash TEXT NOT NULL, expires_at TEXT NOT NULL, attempts INTEGER NOT NULL)"
         )
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS account_bans ("
+            "account_id TEXT PRIMARY KEY, banned_at TEXT NOT NULL, "
+            "FOREIGN KEY(account_id) REFERENCES accounts(account_id))"
+        )
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS account_moderation_events ("
+            "event_id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT NOT NULL, "
+            "target_id TEXT NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL, "
+            "created_at TEXT NOT NULL)"
+        )
         return connection
+
+    def list_managed_accounts(self, *, limit: int = 100) -> list[ManagedAccount]:
+        """Return a bounded owner view without email addresses or password hashes."""
+        if not 1 <= limit <= 100:
+            raise ValueError("Account list limit must be between 1 and 100")
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT a.account_id, a.username, a.created_at, "
+                "EXISTS(SELECT 1 FROM account_emails e WHERE e.account_id = a.account_id), "
+                "EXISTS(SELECT 1 FROM account_bans b WHERE b.account_id = a.account_id) "
+                "FROM accounts a ORDER BY a.created_at DESC, a.account_id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            ManagedAccount(str(row[0]), str(row[1]), str(row[2]), bool(row[3]), bool(row[4]))
+            for row in rows
+        ]
+
+    def ban_account(self, target_id: str, actor_id: str, reason: str = "") -> bool:
+        """Suspend an existing account and revoke every active session atomically."""
+        if target_id == actor_id:
+            raise ValueError("An administrator cannot ban their own account")
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute(
+                "SELECT 1 FROM accounts WHERE account_id = ?", (target_id,)
+            ).fetchone() is None:
+                return False
+            now = datetime.now(UTC).isoformat()
+            changed = connection.execute(
+                "INSERT OR IGNORE INTO account_bans(account_id, banned_at) VALUES (?, ?)",
+                (target_id, now),
+            ).rowcount
+            connection.execute("DELETE FROM account_sessions WHERE account_id = ?", (target_id,))
+            if changed:
+                connection.execute(
+                    "INSERT INTO account_moderation_events"
+                    "(actor_id, target_id, action, reason, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (actor_id, target_id, "ban", reason, now),
+                )
+        return True
+
+    def unban_account(self, target_id: str, actor_id: str) -> bool:
+        """Restore login eligibility without restoring revoked sessions."""
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute(
+                "SELECT 1 FROM accounts WHERE account_id = ?", (target_id,)
+            ).fetchone() is None:
+                return False
+            changed = connection.execute(
+                "DELETE FROM account_bans WHERE account_id = ?", (target_id,)
+            ).rowcount
+            if changed:
+                connection.execute(
+                    "INSERT INTO account_moderation_events"
+                    "(actor_id, target_id, action, reason, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (actor_id, target_id, "unban", "", datetime.now(UTC).isoformat()),
+                )
+        return True
 
     def begin_email_registration(self, username: str, email: str, password: str) -> str | None:
         """Reserve a new identity and return a high-entropy, short-lived email code."""
@@ -168,7 +249,10 @@ class AccountStore:
         now = datetime.now(UTC)
         with closing(self._connect()) as connection, connection:
             row = connection.execute(
-                "SELECT account_id, password_hash FROM accounts WHERE username = ?", (normalized,)
+                "SELECT a.account_id, a.password_hash, "
+                "EXISTS(SELECT 1 FROM account_bans b WHERE b.account_id = a.account_id) "
+                "FROM accounts a WHERE a.username = ?",
+                (normalized,),
             ).fetchone()
             failures = connection.execute(
                 "SELECT failure_count, first_failure_at FROM login_failures WHERE username = ?",
@@ -183,7 +267,7 @@ class AccountStore:
                 valid = _hasher.verify(row[1] if row else _dummy_hash, password)
             except (VerifyMismatchError, VerificationError):
                 valid = False
-            if locked or row is None or not valid:
+            if locked or row is None or not valid or bool(row[2]):
                 if not failures or now - datetime.fromisoformat(failures[1]) >= LOGIN_WINDOW:
                     connection.execute(
                         "INSERT OR REPLACE INTO login_failures VALUES (?, ?, ?)",
@@ -214,7 +298,9 @@ class AccountStore:
             return None
         with closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT account_id, expires_at FROM account_sessions WHERE token_hash = ?",
+                "SELECT s.account_id, s.expires_at FROM account_sessions s "
+                "WHERE s.token_hash = ? AND NOT EXISTS "
+                "(SELECT 1 FROM account_bans b WHERE b.account_id = s.account_id)",
                 (hashlib.sha256(token.encode()).hexdigest(),),
             ).fetchone()
         if row is None or datetime.fromisoformat(row[1]) <= datetime.now(UTC):

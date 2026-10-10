@@ -15,6 +15,7 @@ def isolate_browser_security_settings(monkeypatch):
     monkeypatch.setattr(settings, "EVIDENCEGRAPH_TRUSTED_ORIGINS", "http://127.0.0.1:3000")
     monkeypatch.setattr(settings, "EVIDENCEGRAPH_QUOTAS_ENABLED", False)
     monkeypatch.setattr(settings, "EVIDENCEGRAPH_PUBLIC_MODE", False)
+    monkeypatch.setattr(settings, "EVIDENCEGRAPH_ADMIN_ACCOUNT_ID", None)
     monkeypatch.setattr(settings, "EVIDENCEGRAPH_EMAIL_VERIFICATION_REQUIRED", False)
 
 

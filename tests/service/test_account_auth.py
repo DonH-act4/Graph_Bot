@@ -21,6 +21,7 @@ def test_register_login_logout_and_guest_chat_gate(
             "identity_enforced": True,
             "chat_requires_login": True,
             "authenticated": False,
+            "is_admin": False,
             "email_verification_required": False,
         }
         assert test_client.get("/papers/configuration").status_code == 200

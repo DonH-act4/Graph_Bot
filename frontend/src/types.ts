@@ -58,7 +58,34 @@ export interface BrowserSession {
   identity_enforced: boolean;
   chat_requires_login?: boolean;
   authenticated?: boolean;
+  is_admin?: boolean;
   email_verification_required?: boolean;
+}
+
+export interface AdminSummary {
+  accounts_total: number;
+  verified_email_accounts: number;
+  uploads_allowed_today: number;
+  graphs_allowed_today: number;
+  chats_allowed_this_hour: number;
+  verification_emails_allowed_today: number;
+  quotas_enabled: boolean;
+}
+
+export interface ManagedAccount {
+  account_id: string;
+  username: string;
+  created_at: string;
+  email_verified: boolean;
+  banned: boolean;
+  is_self: boolean;
+  uploads_allowed_today: number;
+  graphs_allowed_today: number;
+  chats_allowed_this_hour: number;
+}
+
+export interface ManagedAccountsResponse {
+  accounts: ManagedAccount[];
 }
 
 export interface EvidenceRef {
