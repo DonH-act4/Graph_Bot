@@ -426,6 +426,7 @@ def test_graph_request_requires_ready_paper(client):
 
 def test_graph_status_and_artifact_require_request(client):
     http, store = client
+    app.dependency_overrides[graph_extraction_is_configured] = lambda: True
     http.post("/papers", content=PDF, headers={"Content-Type": "application/pdf"})
     store.process(PDF_ID)
 
